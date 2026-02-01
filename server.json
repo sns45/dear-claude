@@ -1,0 +1,92 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.sns45/dear-claude",
+  "description": "Trigger Claude Code instances from external platforms (Linear, Gmail, GitHub) when 'dear-claude' is mentioned.",
+  "repository": {
+    "url": "https://github.com/sns45/dear-claude",
+    "source": "github"
+  },
+  "version": "1.0.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "dear-claude",
+      "version": "1.0.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "DEAR_CLAUDE_PORT",
+          "description": "HTTP server port for webhooks",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "GITHUB_CLIENT_ID",
+          "description": "GitHub OAuth App client ID",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "GITHUB_CLIENT_SECRET",
+          "description": "GitHub OAuth App client secret",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "GITHUB_WEBHOOK_SECRET",
+          "description": "GitHub webhook signature secret",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "GITHUB_APP_ID",
+          "description": "GitHub App ID (for bot comments)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "GITHUB_APP_PRIVATE_KEY_PATH",
+          "description": "Path to GitHub App private key file",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "LINEAR_CLIENT_ID",
+          "description": "Linear OAuth client ID",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "LINEAR_CLIENT_SECRET",
+          "description": "Linear OAuth client secret",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "GOOGLE_CLIENT_ID",
+          "description": "Google OAuth client ID",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "GOOGLE_CLIENT_SECRET",
+          "description": "Google OAuth client secret",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
