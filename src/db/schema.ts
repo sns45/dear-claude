@@ -10,7 +10,7 @@ import { mkdirSync, existsSync } from "fs";
 export interface Instance {
   id: string;
   thread_id: string;           // Platform-specific thread/issue ID
-  platform: "linear" | "gmail" | "github";
+  platform: "linear" | "gmail" | "github" | "gitlab";
   status: "pending" | "running" | "completed" | "failed" | "idle" | "expired";
   working_dir: string;
   original_prompt: string;
@@ -31,7 +31,7 @@ export interface Message {
 
 export interface OAuthToken {
   id: string;
-  provider: "linear" | "google" | "github";
+  provider: "linear" | "google" | "github" | "gitlab";
   user_id: string;
   access_token: string;
   refresh_token?: string;
@@ -44,7 +44,7 @@ export interface OAuthToken {
 
 export interface WebhookConfig {
   id: string;
-  platform: "linear" | "gmail" | "github";
+  platform: "linear" | "gmail" | "github" | "gitlab";
   webhook_id?: string;
   webhook_secret?: string;
   subscription_id?: string;    // For Gmail Pub/Sub
@@ -56,7 +56,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS instances (
   id TEXT PRIMARY KEY,
   thread_id TEXT NOT NULL,
-  platform TEXT NOT NULL CHECK (platform IN ('linear', 'gmail', 'github')),
+  platform TEXT NOT NULL CHECK (platform IN ('linear', 'gmail', 'github', 'gitlab')),
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed', 'idle', 'expired')),
   working_dir TEXT NOT NULL,
   original_prompt TEXT NOT NULL,
@@ -86,7 +86,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_instance ON messages (instance_id);
 -- OAuth tokens table
 CREATE TABLE IF NOT EXISTS oauth_tokens (
   id TEXT PRIMARY KEY,
-  provider TEXT NOT NULL CHECK (provider IN ('linear', 'google', 'github')),
+  provider TEXT NOT NULL CHECK (provider IN ('linear', 'google', 'github', 'gitlab')),
   user_id TEXT NOT NULL,
   access_token TEXT NOT NULL,
   refresh_token TEXT,
@@ -102,7 +102,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_provider_user ON oauth_tokens (provi
 -- Webhook configurations table
 CREATE TABLE IF NOT EXISTS webhook_configs (
   id TEXT PRIMARY KEY,
-  platform TEXT NOT NULL UNIQUE CHECK (platform IN ('linear', 'gmail', 'github')),
+  platform TEXT NOT NULL UNIQUE CHECK (platform IN ('linear', 'gmail', 'github', 'gitlab')),
   webhook_id TEXT,
   webhook_secret TEXT,
   subscription_id TEXT,

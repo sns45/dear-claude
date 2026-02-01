@@ -85,6 +85,34 @@
           "isRequired": false,
           "format": "string",
           "isSecret": true
+        },
+        {
+          "name": "GIPHY_API_KEY",
+          "description": "Giphy API key for embedding GIF reactions in responses",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "GITLAB_ACCESS_TOKEN",
+          "description": "GitLab personal access token",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "GITLAB_WEBHOOK_SECRET",
+          "description": "GitLab webhook secret token",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        },
+        {
+          "name": "GITLAB_URL",
+          "description": "GitLab instance URL (defaults to https://gitlab.com)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
         }
       ]
     }

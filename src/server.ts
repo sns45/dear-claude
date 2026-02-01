@@ -12,11 +12,14 @@ const debugLog = (msg: string) => {
 };
 import type { DatabaseManager } from "./db/schema.js";
 import type { InstanceManager } from "./core/instance-manager.js";
+import { parseReviewOutput } from "./core/claude-executor.js";
 import type { ClaudeExecutor, PlatformCallbacks } from "./core/claude-executor.js";
+import type { RepoMeta } from "./core/instance-manager.js";
 import { TriggerDetector } from "./core/trigger-detector.js";
 import { LinearAdapter } from "./adapters/linear-adapter.js";
 import { GmailAdapter } from "./adapters/gmail-adapter.js";
 import { GitHubAdapter } from "./adapters/github-adapter.js";
+import { GitLabAdapter } from "./adapters/gitlab-adapter.js";
 import type { PlatformAdapter } from "./adapters/platform-adapter.js";
 import { sanitize } from "./utils/sanitize.js";
 
@@ -41,6 +44,10 @@ export interface ServerConfig {
     clientSecret?: string;
     webhookSecret?: string;
     accessToken?: string;
+  };
+  gitlab?: {
+    accessToken?: string;
+    webhookSecret?: string;
   };
 }
 
@@ -68,6 +75,9 @@ export function createServer(
   if (config.github) {
     adapters.set("github", new GitHubAdapter(config.github));
   }
+  if (config.gitlab) {
+    adapters.set("gitlab", new GitLabAdapter(config.gitlab));
+  }
 
   // Health check
   app.get("/health", async (c) => {
@@ -81,7 +91,8 @@ export function createServer(
       webhooks: publicUrl ? {
         github: `${publicUrl}/webhook/github`,
         linear: `${publicUrl}/webhook/linear`,
-        gmail: `${publicUrl}/webhook/gmail`
+        gmail: `${publicUrl}/webhook/gmail`,
+        gitlab: `${publicUrl}/webhook/gitlab`
       } : null,
       oauth: publicUrl ? {
         github: `${publicUrl}/setup/github`,
@@ -91,7 +102,8 @@ export function createServer(
       platforms: {
         linear: adapters.has("linear"),
         gmail: adapters.has("gmail"),
-        github: adapters.has("github")
+        github: adapters.has("github"),
+        gitlab: adapters.has("gitlab")
       },
       authenticatedUsers: {
         github: db.getPlatformUsername("github") || null,
@@ -103,7 +115,7 @@ export function createServer(
 
   // Webhook endpoints
   app.post("/webhook/:platform", async (c) => {
-    const platform = c.req.param("platform") as "linear" | "gmail" | "github";
+    const platform = c.req.param("platform") as "linear" | "gmail" | "github" | "gitlab";
     const adapter = adapters.get(platform);
 
     if (!adapter) {
@@ -176,7 +188,10 @@ export function createServer(
       onStart: async (instanceId, message) => {
         debugLog(`onStart called for ${instanceId}, installationId: ${installationId}`);
         try {
-          // Sanitize message before posting to remove sensitive info
+          // React with eyes emoji to indicate processing started
+          if (adapter.addReaction) {
+            await adapter.addReaction(event.threadId, "eyes", event.messageId, installationId);
+          }
           const safeMessage = sanitize(message);
           await adapter.postResponse(event.threadId, safeMessage, installationId);
           debugLog(`onStart postResponse succeeded`);
@@ -190,9 +205,29 @@ export function createServer(
       },
       onComplete: async (instanceId, summary) => {
         try {
-          // Sanitize summary before posting to remove sensitive info
+          // React with checkmark on completion
+          if (adapter.addReaction) {
+            await adapter.addReaction(event.threadId, "white_check_mark", event.messageId, installationId);
+          }
           const safeSummary = sanitize(summary);
-          await adapter.postResponse(event.threadId, safeSummary, installationId);
+          // For PR/MR events, parse review output and post inline comments
+          if (event.isPullRequest && adapter.postPRReview) {
+            const parsed = parseReviewOutput(safeSummary);
+            const comments = parsed.inlineComments.map(c => ({
+              path: c.path,
+              line: c.endLine || c.startLine,
+              body: c.body
+            }));
+            await adapter.postPRReview(
+              event.threadId,
+              parsed.summary,
+              comments.length > 0 ? comments : undefined,
+              "COMMENT",
+              installationId
+            );
+          } else {
+            await adapter.postResponse(event.threadId, safeSummary, installationId);
+          }
           if (adapter.setStatus) {
             await adapter.setStatus(event.threadId, "done", installationId);
           }
@@ -202,7 +237,10 @@ export function createServer(
       },
       onError: async (instanceId, error) => {
         try {
-          // Sanitize error message before posting to remove sensitive info
+          // React with X on error
+          if (adapter.addReaction) {
+            await adapter.addReaction(event.threadId, "x", event.messageId, installationId);
+          }
           const safeError = sanitize(error);
           await adapter.postResponse(event.threadId, `**Error**\n${safeError}`, installationId);
           if (adapter.setStatus) {
@@ -216,7 +254,35 @@ export function createServer(
 
     // Execute Claude
     const isResume = result.action === "RESUME";
-    executor.execute(result.instanceId!, isResume, callbacks).catch((err) => {
+
+    // Build repo metadata for PR/MR events
+    let repoMeta: RepoMeta | undefined;
+    if (event.repoCloneUrl && event.prBranch && adapter.getAuthCloneUrl) {
+      try {
+        const authCloneUrl = await adapter.getAuthCloneUrl(event.repoCloneUrl, installationId);
+        // Extract repo name from clone URL (e.g. "owner/repo" from "https://github.com/owner/repo.git")
+        const repoName = event.repoCloneUrl.replace(/\.git$/, "").split("/").slice(-2).join("/");
+        repoMeta = {
+          authCloneUrl,
+          branch: event.prBranch,
+          baseBranch: event.prBaseBranch || "main",
+          prNumber: event.prNumber || 0,
+          repoName
+        };
+
+        // Store repoMeta in instance context
+        const ctx = await instanceManager.loadContext(result.instanceId!);
+        if (ctx) {
+          ctx.repoMeta = repoMeta;
+          await instanceManager.saveContext(result.instanceId!, ctx);
+        }
+      } catch (err) {
+        console.error("[Server] Failed to build auth clone URL:", err);
+      }
+    }
+
+    const eventMeta = { isPullRequest: event.isPullRequest, diffContent: event.diffContent, repoMeta };
+    executor.execute(result.instanceId!, isResume, callbacks, eventMeta).catch((err) => {
       console.error(`[Server] Execution error:`, err);
     });
 

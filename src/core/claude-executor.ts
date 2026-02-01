@@ -7,7 +7,7 @@ import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import type { InstanceManager } from "./instance-manager.js";
+import type { InstanceManager, RepoMeta } from "./instance-manager.js";
 import type { Instance } from "../db/schema.js";
 
 export interface ExecutionResult {
@@ -44,7 +44,8 @@ export class ClaudeExecutor {
   async execute(
     instanceId: string,
     isResume: boolean = false,
-    callbacks?: PlatformCallbacks
+    callbacks?: PlatformCallbacks,
+    eventMeta?: { isPullRequest?: boolean; diffContent?: string; repoMeta?: RepoMeta }
   ): Promise<void> {
     const instance = this.instanceManager.getInstance(instanceId);
     if (!instance) {
@@ -70,7 +71,7 @@ export class ClaudeExecutor {
     if (isResume) {
       prompt = await this.instanceManager.buildResumePrompt(instanceId, latestUserMessage.content);
     } else {
-      prompt = this.buildNewPrompt(instance, latestUserMessage.content);
+      prompt = this.buildNewPrompt(instance, latestUserMessage.content, eventMeta?.isPullRequest, eventMeta?.diffContent, eventMeta?.repoMeta);
     }
 
     // Update status to running
@@ -235,7 +236,68 @@ export class ClaudeExecutor {
   /**
    * Build prompt for a new instance
    */
-  private buildNewPrompt(instance: Instance, request: string): string {
+  private buildNewPrompt(instance: Instance, request: string, isPR?: boolean, diffContent?: string, repoMeta?: RepoMeta): string {
+    let prSection = "";
+    if (isPR && diffContent) {
+      prSection = `
+## Pull Request / Merge Request Review
+
+You are reviewing a pull request. Analyze the diff below and provide constructive code review.
+Focus on: bugs, security issues, performance, readability, and best practices.
+Be specific with file paths and line numbers when suggesting changes.
+
+### Diff Content
+\`\`\`diff
+${diffContent.slice(0, 15000)}
+\`\`\`
+`;
+    }
+
+    let repoSection = "";
+    if (repoMeta) {
+      repoSection = `
+## Repository Access
+
+The repository should be at ~/dev/${repoMeta.repoName}.
+
+If it exists: cd ~/dev/${repoMeta.repoName} && git fetch origin && git checkout ${repoMeta.branch} && git pull origin ${repoMeta.branch}
+If not: git clone ${repoMeta.authCloneUrl} ~/dev/${repoMeta.repoName} && cd ~/dev/${repoMeta.repoName} && git checkout ${repoMeta.branch}
+
+To push changes after editing:
+  cd ~/dev/${repoMeta.repoName} && git add -A && git commit -m "description" && git push origin ${repoMeta.branch}
+
+The clone URL includes auth — no password needed.
+`;
+    }
+
+    let reviewFormatSection = "";
+    if (isPR) {
+      reviewFormatSection = `
+## Review Output Format
+
+Structure your review as:
+1. Summary at the top
+2. For file-specific comments, use:
+   ### FILE:path/to/file.ts LINE:42
+   Your comment here
+   ### FILE:path/to/file.ts LINE:108-112
+   \`\`\`suggestion
+   fixed code
+   \`\`\`
+These become inline comments with one-click Apply buttons.
+`;
+    }
+
+    const giphyKey = process.env.GIPHY_API_KEY;
+    const gifSection = giphyKey ? `
+## GIF Reactions
+
+To make responses engaging, you can embed GIFs. Use curl to search Giphy:
+  curl -s "https://api.giphy.com/v1/gifs/search?api_key=${giphyKey}&q=QUERY&limit=1&rating=g"
+Then embed: ![description](gif_url)
+Use sparingly - one per response max, only when it adds value (celebrations, humor).
+` : "";
+
     return `
 You received a request from a user via ${instance.platform}. Their request was:
 "${request}"
@@ -246,7 +308,7 @@ You received a request from a user via ${instance.platform}. Their request was:
 2. **Work locally**: Create files and directories in the current working directory (${instance.working_dir})
 3. **Be thorough**: Implement complete, working solutions
 4. **Document your work**: Provide a summary of what you created/changed
-
+${prSection}${repoSection}${reviewFormatSection}
 ## Working Directory
 
 You are working in: ${instance.working_dir}
@@ -260,7 +322,7 @@ You have access to MCP (Model Context Protocol) servers that provide additional 
 - **better-call-claude**: Send WhatsApp messages and SMS via Twilio. Use \`send_whatsapp\` or \`send_sms\` tools.
 
 When the user asks you to send a WhatsApp message or SMS, use the better-call-claude MCP tools directly. The credentials are already configured - just call the tool.
-
+${gifSection}
 Start now. Execute the task.
 `.trim();
   }
@@ -366,4 +428,37 @@ Start now. Execute the task.
     this.activeExecutions.clear();
     console.log("[ClaudeExecutor] Cleaned up all running instances");
   }
+}
+
+export interface ParsedReviewOutput {
+  summary: string;
+  inlineComments: Array<{ path: string; startLine: number; endLine?: number; body: string }>;
+}
+
+/**
+ * Parse Claude's review output into summary + inline comments.
+ * Looks for ### FILE:path/to/file LINE:N or LINE:N-M markers.
+ */
+export function parseReviewOutput(output: string): ParsedReviewOutput {
+  const marker = /^### FILE:(\S+)\s+LINE:(\d+)(?:-(\d+))?/gm;
+  const parts = output.split(marker);
+
+  // parts[0] is the summary (before first marker)
+  // Then groups of 4: [path, startLine, endLine?, body] repeating
+  const summary = parts[0].trim();
+  const inlineComments: ParsedReviewOutput["inlineComments"] = [];
+
+  // After split with capture groups, layout is:
+  // [summary, path1, line1, endLine1, body1, path2, line2, endLine2, body2, ...]
+  for (let i = 1; i + 3 < parts.length; i += 4) {
+    const path = parts[i];
+    const startLine = parseInt(parts[i + 1], 10);
+    const endLine = parts[i + 2] ? parseInt(parts[i + 2], 10) : undefined;
+    const body = parts[i + 3].trim();
+    if (path && body) {
+      inlineComments.push({ path, startLine, endLine, body });
+    }
+  }
+
+  return { summary: summary || output.trim(), inlineComments };
 }

@@ -10,12 +10,21 @@ import { join } from "path";
 import { DatabaseManager, type Instance, type Message } from "../db/schema.js";
 import { TriggerDetector, type TriggerContext, type TriggerResult } from "./trigger-detector.js";
 
+export interface RepoMeta {
+  authCloneUrl: string;
+  branch: string;
+  baseBranch: string;
+  prNumber: number;
+  repoName: string;
+}
+
 export interface InstanceContext {
   originalPrompt: string;
   conversationHistory: Array<{ role: "user" | "assistant"; content: string }>;
   completionSummary?: string;
   filesCreated: string[];
   workingDir: string;
+  repoMeta?: RepoMeta;
 }
 
 export interface CreateInstanceResult {
@@ -247,6 +256,14 @@ export class InstanceManager {
       .map((m, i) => `[${m.role}]: ${m.content.slice(0, 200)}${m.content.length > 200 ? "..." : ""}`)
       .join("\n");
 
+    const repoSection = context.repoMeta ? `
+## Repository Access
+The repo is at ~/dev/${context.repoMeta.repoName}. Run:
+  cd ~/dev/${context.repoMeta.repoName} && git fetch origin && git checkout ${context.repoMeta.branch} && git pull origin ${context.repoMeta.branch}
+To push changes: git add -A && git commit -m "description" && git push origin ${context.repoMeta.branch}
+The clone URL includes auth — no password needed.
+` : "";
+
     return `
 ## IMPORTANT: Resuming Previous Session (Instance: ${instanceId.slice(0, 8)})
 
@@ -263,7 +280,7 @@ ${conversationSummary}
 ---
 
 **New Request**: "${newRequest}"
-
+${repoSection}
 ## Available MCP Tools
 
 You have access to MCP (Model Context Protocol) servers:

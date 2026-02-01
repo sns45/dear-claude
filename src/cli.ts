@@ -33,6 +33,10 @@ function getConfig(): ServerConfig {
       clientSecret: process.env.GITHUB_CLIENT_SECRET,
       webhookSecret: process.env.GITHUB_WEBHOOK_SECRET,
       accessToken: process.env.GITHUB_ACCESS_TOKEN
+    },
+    gitlab: {
+      accessToken: process.env.GITLAB_ACCESS_TOKEN,
+      webhookSecret: process.env.GITLAB_WEBHOOK_SECRET
     }
   };
 }
@@ -110,6 +114,7 @@ export function createCLI(): Command {
         console.log(`   Linear:  ${config.publicUrl}/webhook/linear`);
         console.log(`   Gmail:   ${config.publicUrl}/webhook/gmail`);
         console.log(`   GitHub:  ${config.publicUrl}/webhook/github`);
+        console.log(`   GitLab:  ${config.publicUrl}/webhook/gitlab`);
         console.log(`\n🔐 OAuth Setup:`);
         console.log(`   Linear:  ${config.publicUrl}/setup/linear`);
         console.log(`   Gmail:   ${config.publicUrl}/setup/gmail`);
@@ -145,6 +150,7 @@ export function createCLI(): Command {
       console.log(`  Linear:  ${config.linear?.accessToken ? "✅ Connected" : config.linear?.clientId ? "⚠️  OAuth configured" : "❌ Not configured"}`);
       console.log(`  Gmail:   ${config.gmail?.accessToken ? "✅ Connected" : config.gmail?.clientId ? "⚠️  OAuth configured" : "❌ Not configured"}`);
       console.log(`  GitHub:  ${config.github?.accessToken ? "✅ Connected" : config.github?.clientId ? "⚠️  OAuth configured" : "❌ Not configured"}`);
+      console.log(`  GitLab:  ${config.gitlab?.accessToken ? "✅ Connected" : "❌ Not configured"}`);
 
       // Check database
       try {

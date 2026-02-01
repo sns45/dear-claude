@@ -31,12 +31,34 @@ interface GitHubRepository {
   full_name: string;
   owner: { login: string };
   name: string;
+  clone_url: string;
+}
+
+interface GitHubPullRequest {
+  number: number;
+  title: string;
+  body?: string;
+  user?: { login: string };
+  diff_url?: string;
+  head: { ref: string };
+  base: { ref: string };
+}
+
+interface GitHubPRReviewComment {
+  id: number;
+  body: string;
+  path: string;
+  line?: number;
+  diff_hunk: string;
+  user?: { login: string };
 }
 
 interface GitHubWebhookPayload {
   action: string;
   issue?: GitHubIssue;
   comment?: GitHubComment;
+  pull_request?: GitHubPullRequest;
+  review?: { id: number; body?: string; state: string; user?: { login: string } };
   repository: GitHubRepository;
   sender: { login: string };
   installation?: { id: number };
@@ -259,7 +281,57 @@ export class GitHubAdapter implements PlatformAdapter {
         isDescription: false,
         messageId: String(payload.comment.id),
         authorId: payload.comment.user?.login,
-        installationId, // Pass installation ID for GitHub App mode
+        installationId,
+        raw: payload
+      };
+    }
+
+    // Handle pull request opened
+    if (event === "pull_request" && payload.action === "opened" && payload.pull_request) {
+      const pr = payload.pull_request;
+      let diffContent: string | undefined;
+      try {
+        diffContent = await this.fetchPRDiff(
+          payload.repository.owner.login,
+          payload.repository.name,
+          pr.number,
+          installationId
+        );
+      } catch (e) {
+        console.error("[GitHubAdapter] Failed to fetch PR diff:", e);
+      }
+
+      return {
+        platform: "github",
+        threadId: `${payload.repository.full_name}#${pr.number}`,
+        content: `${pr.title || ""}\n${pr.body || ""}`,
+        isDescription: true,
+        authorId: pr.user?.login,
+        installationId,
+        isPullRequest: true,
+        diffContent,
+        repoCloneUrl: payload.repository.clone_url,
+        prBranch: pr.head.ref,
+        prBaseBranch: pr.base.ref,
+        prNumber: pr.number,
+        raw: payload
+      };
+    }
+
+    // Handle PR review comment
+    if (event === "pull_request_review_comment" && payload.action === "created" && payload.comment) {
+      const prNumber = (payload as any).pull_request?.number;
+      if (!prNumber) return null;
+
+      return {
+        platform: "github",
+        threadId: `${payload.repository.full_name}#${prNumber}`,
+        content: payload.comment.body || "",
+        isDescription: false,
+        messageId: String(payload.comment.id),
+        authorId: payload.comment.user?.login,
+        installationId,
+        isPullRequest: true,
         raw: payload
       };
     }
@@ -355,6 +427,121 @@ export class GitHubAdapter implements PlatformAdapter {
     }
   }
 
+  async addReaction(threadId: string, emoji: string, targetId?: string, installationId?: number): Promise<void> {
+    let token: string;
+    try {
+      token = await this.getAccessToken(installationId);
+    } catch {
+      return;
+    }
+
+    const match = threadId.match(/^(.+?)#(\d+)$/);
+    if (!match) return;
+    const [, repo, issueNumber] = match;
+
+    // GitHub reaction content values
+    const githubEmoji = this.mapEmojiToGitHub(emoji);
+
+    try {
+      let url: string;
+      if (targetId) {
+        // React to a specific comment
+        url = `${this.apiUrl}/repos/${repo}/issues/comments/${targetId}/reactions`;
+      } else {
+        // React to the issue/PR itself
+        url = `${this.apiUrl}/repos/${repo}/issues/${issueNumber}/reactions`;
+      }
+
+      await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28"
+        },
+        body: JSON.stringify({ content: githubEmoji })
+      });
+
+      debugLog(` Added reaction ${githubEmoji} to ${threadId}`);
+    } catch (error) {
+      console.error("[GitHubAdapter] Failed to add reaction:", error);
+    }
+  }
+
+  private mapEmojiToGitHub(emoji: string): string {
+    const map: Record<string, string> = {
+      "eyes": "eyes",
+      "white_check_mark": "+1",
+      "x": "confused",
+      "+1": "+1",
+      "-1": "-1",
+      "rocket": "rocket",
+      "heart": "heart",
+      "hooray": "hooray",
+      "laugh": "laugh",
+    };
+    return map[emoji] || emoji;
+  }
+
+  private async fetchPRDiff(owner: string, repo: string, prNumber: number, installationId?: number): Promise<string> {
+    const token = await this.getAccessToken(installationId);
+
+    const response = await fetch(`${this.apiUrl}/repos/${owner}/${repo}/pulls/${prNumber}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github.diff",
+        "X-GitHub-Api-Version": "2022-11-28"
+      }
+    });
+
+    if (!response.ok) throw new Error(`Failed to fetch PR diff: ${response.status}`);
+    return response.text();
+  }
+
+  async getAuthCloneUrl(cloneUrl: string, installationId?: number): Promise<string> {
+    const token = await this.getAccessToken(installationId);
+    // Replace https://github.com/... with https://x-access-token:<token>@github.com/...
+    return cloneUrl.replace("https://", `https://x-access-token:${token}@`);
+  }
+
+  async postPRReview(
+    threadId: string,
+    body: string,
+    comments?: Array<{ path: string; line: number; body: string }>,
+    event: "COMMENT" | "APPROVE" | "REQUEST_CHANGES" = "COMMENT",
+    installationId?: number
+  ): Promise<void> {
+    const token = await this.getAccessToken(installationId);
+
+    const match = threadId.match(/^(.+?)#(\d+)$/);
+    if (!match) throw new Error(`Invalid thread ID format: ${threadId}`);
+    const [, repo, prNumber] = match;
+
+    const payload: Record<string, unknown> = { body, event };
+    if (comments && comments.length > 0) {
+      payload.comments = comments;
+    }
+
+    const response = await fetch(`${this.apiUrl}/repos/${repo}/pulls/${prNumber}/reviews`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to post PR review: ${error}`);
+    }
+
+    debugLog(` Posted PR review to ${threadId}`);
+  }
+
   getAuthUrl(redirectUri: string, state: string): string {
     const params = new URLSearchParams({
       client_id: this.config.clientId!,
@@ -435,7 +622,7 @@ export class GitHubAdapter implements PlatformAdapter {
       body: JSON.stringify({
         name: "web",
         active: true,
-        events: ["issues", "issue_comment"],
+        events: ["issues", "issue_comment", "pull_request", "pull_request_review_comment"],
         config: {
           url,
           content_type: "json",

@@ -5,7 +5,7 @@
 
 export interface TriggerContext {
   threadId: string;
-  platform: "linear" | "gmail" | "github";
+  platform: "linear" | "gmail" | "github" | "gitlab";
   content: string;
   isDescription: boolean;  // True if this is the issue description/email body, false if comment/reply
   messageId?: string;
@@ -179,6 +179,50 @@ export class TriggerDetector {
 
     return null;
   }
+
+  static parseGitLabEvent(event: GitLabWebhookEvent): TriggerContext | null {
+    if (event.object_kind === "issue" && event.object_attributes?.action === "open") {
+      const attrs = event.object_attributes;
+      return {
+        threadId: `${event.project.path_with_namespace}#${attrs.iid}`,
+        platform: "gitlab",
+        content: `${attrs.title || ""}\n${attrs.description || ""}`,
+        isDescription: true,
+        authorId: event.user?.username,
+        timestamp: Date.now()
+      };
+    }
+
+    if (event.object_kind === "note") {
+      const attrs = event.object_attributes;
+      const iid = event.merge_request?.iid || event.issue?.iid;
+      if (!iid) return null;
+
+      return {
+        threadId: `${event.project.path_with_namespace}#${iid}`,
+        platform: "gitlab",
+        content: attrs.note || "",
+        isDescription: false,
+        messageId: String(attrs.id),
+        authorId: event.user?.username,
+        timestamp: Date.now()
+      };
+    }
+
+    if (event.object_kind === "merge_request" && event.object_attributes?.action === "open") {
+      const attrs = event.object_attributes;
+      return {
+        threadId: `${event.project.path_with_namespace}!${attrs.iid}`,
+        platform: "gitlab",
+        content: `${attrs.title || ""}\n${attrs.description || ""}`,
+        isDescription: true,
+        authorId: event.user?.username,
+        timestamp: Date.now()
+      };
+    }
+
+    return null;
+  }
 }
 
 // Type definitions for platform events
@@ -223,4 +267,21 @@ export interface GitHubWebhookEvent {
     body?: string;
     user?: { login: string };
   };
+}
+
+export interface GitLabWebhookEvent {
+  object_kind: "issue" | "note" | "merge_request" | string;
+  user?: { username: string };
+  project: { path_with_namespace: string; id: number };
+  object_attributes: {
+    id: number;
+    iid?: number;
+    title?: string;
+    description?: string;
+    note?: string;
+    action?: string;
+    noteable_type?: string;
+  };
+  issue?: { iid: number };
+  merge_request?: { iid: number };
 }

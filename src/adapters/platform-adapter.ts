@@ -5,20 +5,28 @@
 
 import type { Context } from "hono";
 
+export type PlatformType = "linear" | "gmail" | "github" | "gitlab";
+
 export interface PlatformEvent {
-  platform: "linear" | "gmail" | "github";
+  platform: PlatformType;
   threadId: string;
   content: string;
   isDescription: boolean;
   messageId?: string;
   authorId?: string;
   installationId?: number; // GitHub App installation ID
+  isPullRequest?: boolean; // GitHub PR or GitLab MR
+  diffContent?: string; // PR/MR diff content
+  repoCloneUrl?: string; // HTTPS clone URL (no auth)
+  prBranch?: string; // Source branch name
+  prBaseBranch?: string; // Target branch name
+  prNumber?: number; // PR/MR number
   raw: unknown;
 }
 
 export interface PlatformAdapter {
   /** Platform identifier */
-  readonly platform: "linear" | "gmail" | "github";
+  readonly platform: PlatformType;
 
   /** Verify webhook signature */
   verifySignature(ctx: Context, body: string): Promise<boolean>;
@@ -31,6 +39,15 @@ export interface PlatformAdapter {
 
   /** Add a label or status indicator (platform-specific) */
   setStatus?(threadId: string, status: "processing" | "done" | "error", installationId?: number): Promise<void>;
+
+  /** Add an emoji reaction to a thread or comment */
+  addReaction?(threadId: string, emoji: string, targetId?: string, installationId?: number): Promise<void>;
+
+  /** Post a PR/MR review with inline comments */
+  postPRReview?(threadId: string, body: string, comments?: Array<{ path: string; line: number; body: string }>, event?: "COMMENT" | "APPROVE" | "REQUEST_CHANGES", installationId?: number): Promise<void>;
+
+  /** Get an authenticated clone URL for pushing commits */
+  getAuthCloneUrl?(cloneUrl: string, installationId?: number): Promise<string>;
 
   /** Initialize OAuth flow */
   getAuthUrl?(redirectUri: string, state: string): string;

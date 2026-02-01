@@ -155,27 +155,99 @@ export class LinearAdapter implements PlatformAdapter {
   async setStatus(threadId: string, status: "processing" | "done" | "error"): Promise<void> {
     if (!this.config.accessToken) return;
 
-    // Map status to Linear label names
-    const labelNames: Record<string, string> = {
-      processing: "claude-processing",
-      done: "claude-done",
-      error: "claude-error"
+    const labelName = `claude-${status}`;
+    const labelsToRemove = ["claude-processing", "claude-done", "claude-error"].filter(l => l !== labelName);
+    const colors: Record<string, string> = {
+      "claude-processing": "#f0ad4e",
+      "claude-done": "#5cb85c",
+      "claude-error": "#d9534f"
     };
 
-    // First, get or create the label
-    const labelQuery = `
-      query GetLabels($filter: IssueLabelFilter) {
-        issueLabels(filter: $filter) {
-          nodes {
-            id
-            name
-          }
-        }
-      }
-    `;
+    try {
+      // Get the issue's team to scope label search
+      const issueQuery = `query { issue(id: "${threadId}") { team { id } labelIds } }`;
+      const issueResult = await this.graphql(issueQuery) as {
+        data?: { issue?: { team: { id: string }; labelIds: string[] } }
+      };
+      const issue = issueResult.data?.issue;
+      if (!issue) return;
 
-    // For now, just log - implementing full label management would require more API calls
-    console.log(`[LinearAdapter] Would set label "${labelNames[status]}" on issue ${threadId}`);
+      // Find or create the target label
+      const searchQuery = `query { issueLabels(filter: { name: { eq: "${labelName}" } }) { nodes { id name } } }`;
+      const searchResult = await this.graphql(searchQuery) as {
+        data?: { issueLabels?: { nodes: Array<{ id: string; name: string }> } }
+      };
+
+      let labelId: string;
+      const existing = searchResult.data?.issueLabels?.nodes?.[0];
+      if (existing) {
+        labelId = existing.id;
+      } else {
+        // Create the label
+        const createMutation = `mutation { issueLabelCreate(input: { name: "${labelName}", color: "${colors[labelName] || "#428bca"}", teamId: "${issue.team.id}" }) { success issueLabel { id } } }`;
+        const createResult = await this.graphql(createMutation) as {
+          data?: { issueLabelCreate?: { issueLabel?: { id: string } } }
+        };
+        labelId = createResult.data?.issueLabelCreate?.issueLabel?.id || "";
+        if (!labelId) return;
+      }
+
+      // Get IDs of labels to remove
+      const removeIds: string[] = [];
+      for (const removeName of labelsToRemove) {
+        const q = `query { issueLabels(filter: { name: { eq: "${removeName}" } }) { nodes { id } } }`;
+        const r = await this.graphql(q) as { data?: { issueLabels?: { nodes: Array<{ id: string }> } } };
+        const found = r.data?.issueLabels?.nodes?.[0];
+        if (found) removeIds.push(found.id);
+      }
+
+      // Update issue labels: keep existing, remove old status, add new
+      const newLabelIds = (issue.labelIds || [])
+        .filter((id: string) => !removeIds.includes(id) && id !== labelId)
+        .concat(labelId);
+
+      const updateMutation = `mutation { issueUpdate(id: "${threadId}", input: { labelIds: ${JSON.stringify(newLabelIds)} }) { success } }`;
+      await this.graphql(updateMutation);
+
+      console.log(`[LinearAdapter] Set label "${labelName}" on issue ${threadId}`);
+    } catch (error) {
+      console.error("[LinearAdapter] Failed to set status label:", error);
+    }
+  }
+
+  async addReaction(threadId: string, emoji: string, targetId?: string): Promise<void> {
+    if (!this.config.accessToken) return;
+
+    // Linear reactions are on comments only (targetId = commentId)
+    if (!targetId) {
+      console.log(`[LinearAdapter] Reactions only supported on comments, skipping reaction on issue ${threadId}`);
+      return;
+    }
+
+    try {
+      const mutation = `mutation { reactionCreate(input: { commentId: "${targetId}", emoji: "${emoji}" }) { success } }`;
+      await this.graphql(mutation);
+      console.log(`[LinearAdapter] Added reaction ${emoji} to comment ${targetId}`);
+    } catch (error) {
+      console.error("[LinearAdapter] Failed to add reaction:", error);
+    }
+  }
+
+  private async graphql(query: string): Promise<unknown> {
+    const response = await fetch(this.apiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": this.config.accessToken!
+      },
+      body: JSON.stringify({ query })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Linear API error: ${response.status}`);
+    }
+
+    return response.json();
   }
 
   getAuthUrl(redirectUri: string, state: string): string {

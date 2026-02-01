@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { TriggerDetector, type TriggerContext } from "../src/core/trigger-detector";
+import { TriggerDetector, type TriggerContext, type GitLabWebhookEvent } from "../src/core/trigger-detector";
 
 describe("TriggerDetector.containsTrigger", () => {
   test("matches 'dear claude'", () => {
@@ -221,6 +221,65 @@ describe("TriggerDetector.parseLinearEvent", () => {
       action: "update",
       data: { id: "issue-123" },
       organizationId: "org-1",
+    });
+    expect(result).toBeNull();
+  });
+});
+
+describe("TriggerDetector.parseGitLabEvent", () => {
+  test("parses issue open event", () => {
+    const result = TriggerDetector.parseGitLabEvent({
+      object_kind: "issue",
+      user: { username: "testuser" },
+      project: { path_with_namespace: "group/project", id: 1 },
+      object_attributes: {
+        id: 1, iid: 5, title: "Dear Claude", description: "Fix this", action: "open"
+      }
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.threadId).toBe("group/project#5");
+    expect(result!.platform).toBe("gitlab");
+    expect(result!.isDescription).toBe(true);
+  });
+
+  test("parses MR open event", () => {
+    const result = TriggerDetector.parseGitLabEvent({
+      object_kind: "merge_request",
+      user: { username: "testuser" },
+      project: { path_with_namespace: "group/project", id: 1 },
+      object_attributes: {
+        id: 1, iid: 3, title: "Dear Claude review", description: "MR desc", action: "open"
+      }
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.threadId).toBe("group/project!3");
+    expect(result!.platform).toBe("gitlab");
+  });
+
+  test("parses note event on issue", () => {
+    const result = TriggerDetector.parseGitLabEvent({
+      object_kind: "note",
+      user: { username: "commenter" },
+      project: { path_with_namespace: "group/project", id: 1 },
+      object_attributes: {
+        id: 99, note: "Dear Claude, continue", noteable_type: "Issue"
+      },
+      issue: { iid: 5 }
+    });
+
+    expect(result).not.toBeNull();
+    expect(result!.threadId).toBe("group/project#5");
+    expect(result!.isDescription).toBe(false);
+    expect(result!.messageId).toBe("99");
+  });
+
+  test("returns null for unsupported event kind", () => {
+    const result = TriggerDetector.parseGitLabEvent({
+      object_kind: "pipeline",
+      project: { path_with_namespace: "group/project", id: 1 },
+      object_attributes: { id: 1 }
     });
     expect(result).toBeNull();
   });
