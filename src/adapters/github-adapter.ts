@@ -272,8 +272,38 @@ export class GitHubAdapter implements PlatformAdapter {
       };
     }
 
-    // Handle issue comment events
+    // Handle issue comment events (also fires for PR comments)
     if (event === "issue_comment" && payload.action === "created" && payload.comment && payload.issue) {
+      // Check if this is a PR comment (GitHub includes pull_request key on PR issues)
+      const isPR = !!(payload.issue as any).pull_request;
+      let diffContent: string | undefined;
+      let repoCloneUrl: string | undefined;
+      let prBranch: string | undefined;
+      let prBaseBranch: string | undefined;
+
+      if (isPR) {
+        try {
+          // Fetch PR details to get branch info and diff
+          const prData = await this.fetchPRDetails(
+            payload.repository.owner.login,
+            payload.repository.name,
+            payload.issue.number,
+            installationId
+          );
+          repoCloneUrl = payload.repository.clone_url;
+          prBranch = prData.head.ref;
+          prBaseBranch = prData.base.ref;
+          diffContent = await this.fetchPRDiff(
+            payload.repository.owner.login,
+            payload.repository.name,
+            payload.issue.number,
+            installationId
+          );
+        } catch (e) {
+          console.error("[GitHubAdapter] Failed to fetch PR details for issue_comment:", e);
+        }
+      }
+
       return {
         platform: "github",
         threadId: `${payload.repository.full_name}#${payload.issue.number}`,
@@ -282,6 +312,12 @@ export class GitHubAdapter implements PlatformAdapter {
         messageId: String(payload.comment.id),
         authorId: payload.comment.user?.login,
         installationId,
+        isPullRequest: isPR,
+        diffContent,
+        repoCloneUrl,
+        prBranch,
+        prBaseBranch,
+        prNumber: isPR ? payload.issue.number : undefined,
         raw: payload
       };
     }
@@ -482,6 +518,21 @@ export class GitHubAdapter implements PlatformAdapter {
       "laugh": "laugh",
     };
     return map[emoji] || emoji;
+  }
+
+  private async fetchPRDetails(owner: string, repo: string, prNumber: number, installationId?: number): Promise<GitHubPullRequest> {
+    const token = await this.getAccessToken(installationId);
+
+    const response = await fetch(`${this.apiUrl}/repos/${owner}/${repo}/pulls/${prNumber}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      }
+    });
+
+    if (!response.ok) throw new Error(`Failed to fetch PR details: ${response.status}`);
+    return response.json() as Promise<GitHubPullRequest>;
   }
 
   private async fetchPRDiff(owner: string, repo: string, prNumber: number, installationId?: number): Promise<string> {
