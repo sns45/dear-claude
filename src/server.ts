@@ -132,6 +132,12 @@ export function createServer(
       return c.json({ error: "Invalid signature" }, 401);
     }
 
+    // Inject DB token before parsing (parseWebhook may need to call APIs)
+    const dbToken = db.getOAuthTokenByProvider(platform);
+    if (dbToken?.access_token && adapter.setAccessToken) {
+      adapter.setAccessToken(dbToken.access_token);
+    }
+
     // Parse webhook
     const body = JSON.parse(rawBody);
     const event = await adapter.parseWebhook(c, body);
@@ -172,12 +178,6 @@ export function createServer(
 
     if (result.action === "IGNORE") {
       return c.json({ status: "ignored", reason: result.reason });
-    }
-
-    // Get access token from DB if not in config (for OAuth-authenticated adapters)
-    const dbToken = db.getOAuthTokenByProvider(platform);
-    if (dbToken?.access_token && adapter.setAccessToken) {
-      adapter.setAccessToken(dbToken.access_token);
     }
 
     // Set up platform callbacks
