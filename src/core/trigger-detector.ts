@@ -5,7 +5,7 @@
 
 export interface TriggerContext {
   threadId: string;
-  platform: "linear" | "gmail" | "github" | "gitlab";
+  platform: "linear" | "gmail" | "github" | "gitlab" | "jira" | "notion" | "obsidian";
   content: string;
   isDescription: boolean;  // True if this is the issue description/email body, false if comment/reply
   messageId?: string;
@@ -21,8 +21,8 @@ export interface TriggerResult {
   reason: string;
 }
 
-// Pattern to match "dear-claude", "dear claude", "Dear-Claude", etc.
-const DEAR_CLAUDE_PATTERN = /\bdear[- ]?claude\b/i;
+// Pattern to match "dear claude", "Dear Claude", etc. (space only, not hyphenated)
+const DEAR_CLAUDE_PATTERN = /\bdear claude\b/i;
 
 export class TriggerDetector {
   /**
@@ -84,8 +84,23 @@ export class TriggerDetector {
       };
     }
 
-    // Has trigger phrase in description/body of new item → NEW
+    // Has trigger phrase in description/body of new item
     if (context.isDescription) {
+      // If an instance already exists for this thread (e.g. from a prior create/update event), deduplicate
+      if (existingInstanceId && existingInstanceStatus && !["expired", "failed"].includes(existingInstanceStatus)) {
+        if (existingInstanceStatus === "pending") {
+          return {
+            action: "IGNORE",
+            context,
+            reason: `Duplicate description event — instance ${existingInstanceId} already pending`
+          };
+        }
+        return {
+          action: "RESUME",
+          context,
+          reason: `Resuming existing instance ${existingInstanceId} from description update`
+        };
+      }
       return {
         action: "NEW",
         context,

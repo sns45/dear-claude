@@ -5,7 +5,7 @@
 
 import type { Context } from "hono";
 
-export type PlatformType = "linear" | "gmail" | "github" | "gitlab";
+export type PlatformType = "linear" | "gmail" | "github" | "gitlab" | "jira" | "notion" | "obsidian";
 
 export interface PlatformEvent {
   platform: PlatformType;
@@ -21,6 +21,11 @@ export interface PlatformEvent {
   prBranch?: string; // Source branch name
   prBaseBranch?: string; // Target branch name
   prNumber?: number; // PR/MR number
+  issueTitle?: string;
+  issueDescription?: string;
+  parentIssueId?: string;
+  projectKey?: string;
+  issueUrl?: string;
   raw: unknown;
 }
 

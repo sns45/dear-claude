@@ -10,6 +10,30 @@ import { join } from "path";
 import type { InstanceManager, RepoMeta } from "./instance-manager.js";
 import type { Instance } from "../db/schema.js";
 
+export interface PlatformCredentials {
+  type: "linear" | "jira" | "github" | "gitlab" | "notion";
+  token?: string;        // Linear access token, GitHub token, or Notion token
+  basicAuth?: string;    // Jira base64-encoded email:token
+  baseUrl?: string;      // Jira base URL
+  teamId?: string;       // Linear team ID
+  projectKey?: string;   // Jira project key or Linear team key
+}
+
+export interface AllPlatformCredentials {
+  linear?: { token: string; teamId?: string };
+  jira?: { basicAuth: string; baseUrl: string; projectKey?: string };
+  notion?: { token: string };
+  github?: { token: string; apiUrl?: string };
+  gitlab?: { token: string; apiUrl?: string };
+}
+
+export interface IssueContext {
+  title?: string;
+  issueUrl?: string;
+  parentIssueId?: string;
+  projectKey?: string;
+}
+
 export interface ExecutionResult {
   instanceId: string;
   success: boolean;
@@ -45,7 +69,15 @@ export class ClaudeExecutor {
     instanceId: string,
     isResume: boolean = false,
     callbacks?: PlatformCallbacks,
-    eventMeta?: { isPullRequest?: boolean; diffContent?: string; repoMeta?: RepoMeta }
+    eventMeta?: {
+      isPullRequest?: boolean;
+      diffContent?: string;
+      repoMeta?: RepoMeta;
+      platformCredentials?: PlatformCredentials;
+      issueContext?: IssueContext;
+      allCredentials?: AllPlatformCredentials;
+      spawnPort?: number;
+    }
   ): Promise<void> {
     const instance = this.instanceManager.getInstance(instanceId);
     if (!instance) {
@@ -69,9 +101,9 @@ export class ClaudeExecutor {
     // Build prompt
     let prompt: string;
     if (isResume) {
-      prompt = await this.instanceManager.buildResumePrompt(instanceId, latestUserMessage.content);
+      prompt = await this.instanceManager.buildResumePrompt(instanceId, latestUserMessage.content, eventMeta?.allCredentials);
     } else {
-      prompt = this.buildNewPrompt(instance, latestUserMessage.content, eventMeta?.isPullRequest, eventMeta?.diffContent, eventMeta?.repoMeta);
+      prompt = this.buildNewPrompt(instance, latestUserMessage.content, eventMeta?.isPullRequest, eventMeta?.diffContent, eventMeta?.repoMeta, eventMeta?.platformCredentials, eventMeta?.issueContext, eventMeta?.allCredentials, eventMeta?.spawnPort);
     }
 
     // Update status to running
@@ -79,9 +111,12 @@ export class ClaudeExecutor {
 
     // Notify platform that we're starting
     if (callbacks?.onStart) {
+      const resumeHint = instance.claude_session_id
+        ? `\nResume in terminal: \`claude --resume ${instance.claude_session_id}\``
+        : "";
       const message = isResume
-        ? `**Resuming Previous Session** (ID: ${instanceId.slice(0, 8)})\nOriginal request: "${instance.original_prompt.slice(0, 100)}..."\nContinuing from where we left off...`
-        : `**Claude Instance Started** (ID: ${instanceId.slice(0, 8)})\nProcessing your request...`;
+        ? `**Resuming Previous Session** (Instance: \`${instanceId}\`)\nOriginal request: "${instance.original_prompt.slice(0, 100)}..."${resumeHint}\nContinuing from where we left off...`
+        : `**Claude Instance Started** (Instance: \`${instanceId}\`)\nProcessing your request...`;
       await callbacks.onStart(instanceId, message);
     }
 
@@ -97,7 +132,7 @@ export class ClaudeExecutor {
     this.activeExecutions.set(instanceId, execution);
 
     // Run in background so execute() returns immediately
-    this.runQuery(instanceId, instance, prompt, execution, callbacks).catch((err) => {
+    this.runQuery(instanceId, instance, prompt, execution, callbacks, isResume).catch((err) => {
       console.error(`[ClaudeExecutor] Unhandled error for ${instanceId}:`, err);
     });
   }
@@ -107,31 +142,44 @@ export class ClaudeExecutor {
     instance: Instance,
     prompt: string,
     execution: ActiveExecution,
-    callbacks?: PlatformCallbacks
+    callbacks?: PlatformCallbacks,
+    isResume: boolean = false
   ): Promise<void> {
     try {
       const mcpServers = this.getMcpServers();
       console.log(`[ClaudeExecutor] MCP servers for ${instanceId.slice(0, 8)}:`, Object.keys(mcpServers));
 
+      // If resuming and we have a stored session ID, use SDK's native resume
+      const canNativeResume = isResume && instance.claude_session_id;
+      if (canNativeResume) {
+        console.log(`[ClaudeExecutor] Native resume with session ${instance.claude_session_id}`);
+      }
+
+      const queryOptions: any = {
+        abortController: execution.abortController,
+        cwd: instance.working_dir,
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          append: `You are working on behalf of a user who contacted you via ${instance.platform}. Complete their request thoroughly.`
+        },
+        tools: { type: "preset", preset: "claude_code" },
+        mcpServers,
+        maxTurns: 50,
+        stderr: (data: string) => {
+          console.error(`[Claude:${instanceId.slice(0, 8)}:stderr] ${data.trim()}`);
+        },
+      };
+
+      if (canNativeResume) {
+        queryOptions.resume = instance.claude_session_id;
+      }
+
       const conversation = query({
         prompt,
-        options: {
-          abortController: execution.abortController,
-          cwd: instance.working_dir,
-          permissionMode: "bypassPermissions",
-          allowDangerouslySkipPermissions: true,
-          systemPrompt: {
-            type: "preset",
-            preset: "claude_code",
-            append: `You are working on behalf of a user who contacted you via ${instance.platform}. Complete their request thoroughly.`
-          },
-          tools: { type: "preset", preset: "claude_code" },
-          mcpServers,
-          maxTurns: 50,
-          stderr: (data: string) => {
-            console.error(`[Claude:${instanceId.slice(0, 8)}:stderr] ${data.trim()}`);
-          },
-        }
+        options: queryOptions,
       });
 
       // Check MCP server status
@@ -143,8 +191,17 @@ export class ClaudeExecutor {
       }
 
       let resultText = "";
+      let sessionCaptured = false;
 
       for await (const message of conversation) {
+        // Capture session_id from first message that has it
+        if (!sessionCaptured && "session_id" in message && (message as any).session_id) {
+          const sessionId = (message as any).session_id as string;
+          this.instanceManager.updateSessionId(instanceId, sessionId);
+          sessionCaptured = true;
+          console.log(`[ClaudeExecutor] Captured session ${sessionId} for instance ${instanceId.slice(0, 8)}`);
+        }
+
         if (message.type === "assistant") {
           const content = message.message.content;
           if (Array.isArray(content)) {
@@ -185,7 +242,12 @@ export class ClaudeExecutor {
       console.log(`[ClaudeExecutor] Instance ${instanceId} completed successfully`);
 
       if (callbacks?.onComplete) {
-        await callbacks.onComplete(instanceId, `**Task Completed**\n${summary}`);
+        // Fetch latest instance to get session ID (captured during streaming)
+        const latest = this.instanceManager.getInstance(instanceId);
+        const resumeCmd = latest?.claude_session_id
+          ? `\n\nResume in terminal: \`claude --resume ${latest.claude_session_id}\``
+          : "";
+        await callbacks.onComplete(instanceId, `**Task Completed** (Instance: \`${instanceId}\`)${resumeCmd}\n${summary}`);
       }
     } catch (err: any) {
       this.activeExecutions.delete(instanceId);
@@ -234,9 +296,235 @@ export class ClaudeExecutor {
   }
 
   /**
+   * Build Linear API section for prompt
+   */
+  private buildLinearApiSection(creds: { token: string; teamId?: string }, issueContext?: IssueContext): string {
+    return `
+## Linear API Access
+
+You can interact with Linear directly using curl. Your access token is already embedded.
+
+### Create a sub-issue
+\`\`\`bash
+curl -s -X POST https://api.linear.app/graphql \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: ${creds.token}" \\
+  -d '{"query":"mutation { issueCreate(input: { title: \\"TITLE\\", description: \\"DESC\\"${creds.teamId ? `, teamId: \\"${creds.teamId}\\"` : ""}${issueContext?.parentIssueId ? `, parentId: \\"${issueContext.parentIssueId}\\"` : ""} }) { success issue { id identifier url } } }"}'
+\`\`\`
+
+### Query workflow states (to find state IDs for status transitions)
+\`\`\`bash
+curl -s -X POST https://api.linear.app/graphql \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: ${creds.token}" \\
+  -d '{"query":"{ workflowStates { nodes { id name type } } }"}'
+\`\`\`
+
+### Update issue status
+\`\`\`bash
+curl -s -X POST https://api.linear.app/graphql \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: ${creds.token}" \\
+  -d '{"query":"mutation { issueUpdate(id: \\"ISSUE_ID\\", input: { stateId: \\"STATE_ID\\" }) { success } }"}'
+\`\`\`
+`;
+  }
+
+  /**
+   * Build Jira API section for prompt
+   */
+  private buildJiraApiSection(creds: { basicAuth: string; baseUrl: string; projectKey?: string }, issueContext?: IssueContext): string {
+    return `
+## Jira API Access
+
+You can interact with Jira directly using curl. Your credentials are already embedded.
+
+### Create a sub-task
+\`\`\`bash
+curl -s -X POST ${creds.baseUrl}/rest/api/2/issue \\
+  -H "Authorization: Basic ${creds.basicAuth}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"fields":{"project":{"key":"${creds.projectKey || "PROJECT"}"},"summary":"TITLE","description":"DESC","issuetype":{"name":"Sub-task"}${issueContext?.parentIssueId ? `,"parent":{"key":"${issueContext.parentIssueId}"}` : ""}}}'
+\`\`\`
+
+### Query available transitions (to find transition IDs for status changes)
+\`\`\`bash
+curl -s ${creds.baseUrl}/rest/api/2/issue/ISSUE_KEY/transitions \\
+  -H "Authorization: Basic ${creds.basicAuth}" \\
+  -H "Accept: application/json"
+\`\`\`
+
+### Transition issue status
+\`\`\`bash
+curl -s -X POST ${creds.baseUrl}/rest/api/2/issue/ISSUE_KEY/transitions \\
+  -H "Authorization: Basic ${creds.basicAuth}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"transition":{"id":"TRANSITION_ID"}}'
+\`\`\`
+
+### Add a comment
+\`\`\`bash
+curl -s -X POST ${creds.baseUrl}/rest/api/2/issue/ISSUE_KEY/comment \\
+  -H "Authorization: Basic ${creds.basicAuth}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"body":"Comment text"}'
+\`\`\`
+`;
+  }
+
+  /**
+   * Build Notion API section for prompt
+   */
+  private buildNotionApiSection(creds: { token: string }): string {
+    return `
+## Notion API Access
+
+You can interact with Notion directly using curl. Your access token is already embedded.
+
+### Query a database (with optional filter)
+\`\`\`bash
+curl -s -X POST https://api.notion.com/v1/databases/DATABASE_ID/query \\
+  -H "Authorization: Bearer ${creds.token}" \\
+  -H "Notion-Version: 2022-06-28" \\
+  -H "Content-Type: application/json" \\
+  -d '{"filter":{"property":"Status","select":{"equals":"In Progress"}}}'
+\`\`\`
+
+### Create a database entry
+\`\`\`bash
+curl -s -X POST https://api.notion.com/v1/pages \\
+  -H "Authorization: Bearer ${creds.token}" \\
+  -H "Notion-Version: 2022-06-28" \\
+  -H "Content-Type: application/json" \\
+  -d '{"parent":{"database_id":"DATABASE_ID"},"properties":{"Name":{"title":[{"text":{"content":"TITLE"}}]},"Status":{"select":{"name":"To Do"}}}}'
+\`\`\`
+
+### Create a sub-page
+\`\`\`bash
+curl -s -X POST https://api.notion.com/v1/pages \\
+  -H "Authorization: Bearer ${creds.token}" \\
+  -H "Notion-Version: 2022-06-28" \\
+  -H "Content-Type: application/json" \\
+  -d '{"parent":{"page_id":"PARENT_PAGE_ID"},"properties":{"title":{"title":[{"text":{"content":"TITLE"}}]}},"children":[{"object":"block","type":"paragraph","paragraph":{"rich_text":[{"text":{"content":"Content here"}}]}}]}'
+\`\`\`
+
+### Update page properties
+\`\`\`bash
+curl -s -X PATCH https://api.notion.com/v1/pages/PAGE_ID \\
+  -H "Authorization: Bearer ${creds.token}" \\
+  -H "Notion-Version: 2022-06-28" \\
+  -H "Content-Type: application/json" \\
+  -d '{"properties":{"Status":{"select":{"name":"Done"}}}}'
+\`\`\`
+`;
+  }
+
+  /**
+   * Build GitHub API section for prompt
+   */
+  private buildGitHubApiSection(creds: { token: string; apiUrl?: string }): string {
+    const apiBase = creds.apiUrl || "https://api.github.com";
+    return `
+## GitHub API Access
+
+You can interact with GitHub directly using curl or the \`gh\` CLI. Your token is already embedded.
+
+### Create an issue
+\`\`\`bash
+curl -s -X POST ${apiBase}/repos/OWNER/REPO/issues \\
+  -H "Authorization: Bearer ${creds.token}" \\
+  -H "Accept: application/vnd.github+json" \\
+  -d '{"title":"TITLE","body":"DESCRIPTION","labels":["bug"]}'
+\`\`\`
+
+### Create a pull request
+\`\`\`bash
+curl -s -X POST ${apiBase}/repos/OWNER/REPO/pulls \\
+  -H "Authorization: Bearer ${creds.token}" \\
+  -H "Accept: application/vnd.github+json" \\
+  -d '{"title":"TITLE","body":"DESCRIPTION","head":"BRANCH","base":"main"}'
+\`\`\`
+
+### Add a comment to an issue or PR
+\`\`\`bash
+curl -s -X POST ${apiBase}/repos/OWNER/REPO/issues/NUMBER/comments \\
+  -H "Authorization: Bearer ${creds.token}" \\
+  -H "Accept: application/vnd.github+json" \\
+  -d '{"body":"Comment text"}'
+\`\`\`
+
+### Add labels
+\`\`\`bash
+curl -s -X POST ${apiBase}/repos/OWNER/REPO/issues/NUMBER/labels \\
+  -H "Authorization: Bearer ${creds.token}" \\
+  -H "Accept: application/vnd.github+json" \\
+  -d '{"labels":["label-name"]}'
+\`\`\`
+`;
+  }
+
+  /**
+   * Build GitLab API section for prompt
+   */
+  private buildGitLabApiSection(creds: { token: string; apiUrl?: string }): string {
+    const apiBase = creds.apiUrl || "https://gitlab.com/api/v4";
+    return `
+## GitLab API Access
+
+You can interact with GitLab directly using curl. Your token is already embedded.
+
+### Create an issue
+\`\`\`bash
+curl -s -X POST "${apiBase}/projects/PROJECT_ID/issues" \\
+  -H "PRIVATE-TOKEN: ${creds.token}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"title":"TITLE","description":"DESC","labels":"bug"}'
+\`\`\`
+
+### Create a merge request
+\`\`\`bash
+curl -s -X POST "${apiBase}/projects/PROJECT_ID/merge_requests" \\
+  -H "PRIVATE-TOKEN: ${creds.token}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"source_branch":"BRANCH","target_branch":"main","title":"TITLE","description":"DESC"}'
+\`\`\`
+
+### Add a comment to an issue
+\`\`\`bash
+curl -s -X POST "${apiBase}/projects/PROJECT_ID/issues/ISSUE_IID/notes" \\
+  -H "PRIVATE-TOKEN: ${creds.token}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"body":"Comment text"}'
+\`\`\`
+
+### Add a comment to a merge request
+\`\`\`bash
+curl -s -X POST "${apiBase}/projects/PROJECT_ID/merge_requests/MR_IID/notes" \\
+  -H "PRIVATE-TOKEN: ${creds.token}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"body":"Comment text"}'
+\`\`\`
+`;
+  }
+
+  /**
+   * Build all platform API sections from AllPlatformCredentials
+   */
+  private buildAllPlatformApiSections(allCredentials?: AllPlatformCredentials, issueContext?: IssueContext): string {
+    if (!allCredentials) return "";
+    let sections = "";
+    if (allCredentials.linear) sections += this.buildLinearApiSection(allCredentials.linear, issueContext);
+    if (allCredentials.jira) sections += this.buildJiraApiSection(allCredentials.jira, issueContext);
+    if (allCredentials.notion) sections += this.buildNotionApiSection(allCredentials.notion);
+    if (allCredentials.github) sections += this.buildGitHubApiSection(allCredentials.github);
+    if (allCredentials.gitlab) sections += this.buildGitLabApiSection(allCredentials.gitlab);
+    return sections;
+  }
+
+  /**
    * Build prompt for a new instance
    */
-  private buildNewPrompt(instance: Instance, request: string, isPR?: boolean, diffContent?: string, repoMeta?: RepoMeta): string {
+  private buildNewPrompt(instance: Instance, request: string, isPR?: boolean, diffContent?: string, repoMeta?: RepoMeta, platformCredentials?: PlatformCredentials, issueContext?: IssueContext, allCredentials?: AllPlatformCredentials, spawnPort?: number): string {
     let prSection = "";
     if (isPR && diffContent) {
       prSection = `
@@ -258,13 +546,29 @@ ${diffContent.slice(0, 15000)}
       repoSection = `
 ## Repository Access
 
-The repository should be at ~/dev/${repoMeta.repoName}.
+Base repo location: ~/dev/${repoMeta.repoName}
 
-If it exists: cd ~/dev/${repoMeta.repoName} && git fetch origin && git checkout ${repoMeta.branch} && git pull origin ${repoMeta.branch}
-If not: git clone ${repoMeta.authCloneUrl} ~/dev/${repoMeta.repoName} && cd ~/dev/${repoMeta.repoName} && git checkout ${repoMeta.branch}
+### Setup (run these commands):
+\`\`\`bash
+if [ -d ~/dev/${repoMeta.repoName}/.git ]; then
+  cd ~/dev/${repoMeta.repoName}
+  git fetch origin
+  git worktree add .worktrees/${repoMeta.branch} -b ${repoMeta.branch} origin/${repoMeta.baseBranch} 2>/dev/null || \\
+    git worktree add .worktrees/${repoMeta.branch} ${repoMeta.branch} 2>/dev/null || \\
+    (cd ~/dev/${repoMeta.repoName} && git checkout ${repoMeta.branch} && git pull origin ${repoMeta.branch})
+else
+  git clone ${repoMeta.authCloneUrl} ~/dev/${repoMeta.repoName}
+  cd ~/dev/${repoMeta.repoName}
+fi
+\`\`\`
 
-To push changes after editing:
-  cd ~/dev/${repoMeta.repoName} && git add -A && git commit -m "description" && git push origin ${repoMeta.branch}
+If using worktree, work in: ~/dev/${repoMeta.repoName}/.worktrees/${repoMeta.branch}
+Otherwise: ~/dev/${repoMeta.repoName}
+
+### After making changes:
+\`\`\`bash
+git add -A && git commit -m "description" && git push origin ${repoMeta.branch}
+\`\`\`
 
 The clone URL includes auth — no password needed.
 `;
@@ -298,6 +602,38 @@ Then embed: ![description](gif_url)
 Use sparingly - one per response max, only when it adds value (celebrations, humor).
 ` : "";
 
+    let issueContextSection = "";
+    if (issueContext) {
+      issueContextSection = `
+## Issue Context
+
+${issueContext.title ? `**Title**: ${issueContext.title}` : ""}
+${issueContext.issueUrl ? `**URL**: ${issueContext.issueUrl}` : ""}
+${issueContext.projectKey ? `**Project**: ${issueContext.projectKey}` : ""}
+${issueContext.parentIssueId ? `**Parent Issue**: ${issueContext.parentIssueId}` : ""}
+`;
+    }
+
+    // Build API sections for ALL configured platforms (not just triggering platform)
+    const platformApiSection = this.buildAllPlatformApiSections(allCredentials, issueContext);
+
+    let obsidianSection = "";
+    if (instance.platform === "obsidian") {
+      obsidianSection = `
+## Obsidian Vault Access
+
+Your working directory IS the Obsidian vault at ${instance.working_dir}.
+You have direct filesystem access to the entire knowledge base.
+
+- Read any note with the Read tool. Create/edit notes by writing markdown files.
+- Wikilinks use [[note-name]] syntax. Files are .md in the vault directory.
+- Attachments are typically in an "attachments" or "assets" subdirectory.
+- Your response will be appended to the source file as a callout block automatically.
+
+When images are referenced below, use the Read tool to view them — you can see and analyze images directly.
+`;
+    }
+
     return `
 You received a request from a user via ${instance.platform}. Their request was:
 "${request}"
@@ -308,7 +644,7 @@ You received a request from a user via ${instance.platform}. Their request was:
 2. **Work locally**: Create files and directories in the current working directory (${instance.working_dir})
 3. **Be thorough**: Implement complete, working solutions
 4. **Document your work**: Provide a summary of what you created/changed
-${prSection}${repoSection}${reviewFormatSection}
+${prSection}${repoSection}${reviewFormatSection}${issueContextSection}${platformApiSection}${obsidianSection}
 ## Working Directory
 
 You are working in: ${instance.working_dir}
@@ -322,7 +658,31 @@ You have access to MCP (Model Context Protocol) servers that provide additional 
 - **better-call-claude**: Send WhatsApp messages and SMS via Twilio. Use \`send_whatsapp\` or \`send_sms\` tools.
 
 When the user asks you to send a WhatsApp message or SMS, use the better-call-claude MCP tools directly. The credentials are already configured - just call the tool.
-${gifSection}
+${gifSection}${spawnPort ? `
+## Instance Orchestration
+
+Your instance ID: ${instance.id}
+Dear-claude API: http://localhost:${spawnPort}
+
+### Spawn a parallel instance (for parallel coding tasks):
+\`\`\`bash
+curl -s -X POST http://localhost:${spawnPort}/api/spawn \\
+  -H "Content-Type: application/json" \\
+  -d '{"prompt":"TASK DESCRIPTION","branch":"feature/task-name","repo_url":"https://github.com/OWNER/REPO","parent_instance_id":"${instance.id}","project_id":"${instance.project_id || instance.id}"}'
+\`\`\`
+
+### Check instance status:
+\`\`\`bash
+curl -s http://localhost:${spawnPort}/api/instances/INSTANCE_ID
+\`\`\`
+
+### List project instances:
+\`\`\`bash
+curl -s "http://localhost:${spawnPort}/api/instances?project_id=${instance.project_id || instance.id}"
+\`\`\`
+
+Use this to parallelize work: spawn one instance per task/branch, each works in its own git worktree.
+` : ""}
 Start now. Execute the task.
 `.trim();
   }

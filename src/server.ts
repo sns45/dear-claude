@@ -10,7 +10,7 @@ import { appendFileSync } from "fs";
 const debugLog = (msg: string) => {
   appendFileSync("/tmp/dear-claude-debug.log", `${new Date().toISOString()} ${msg}\n`);
 };
-import type { DatabaseManager } from "./db/schema.js";
+import type { DatabaseManager, Instance } from "./db/schema.js";
 import type { InstanceManager } from "./core/instance-manager.js";
 import { parseReviewOutput } from "./core/claude-executor.js";
 import type { ClaudeExecutor, PlatformCallbacks } from "./core/claude-executor.js";
@@ -20,8 +20,55 @@ import { LinearAdapter } from "./adapters/linear-adapter.js";
 import { GmailAdapter } from "./adapters/gmail-adapter.js";
 import { GitHubAdapter } from "./adapters/github-adapter.js";
 import { GitLabAdapter } from "./adapters/gitlab-adapter.js";
+import { JiraAdapter } from "./adapters/jira-adapter.js";
+import { NotionAdapter } from "./adapters/notion-adapter.js";
+import { ObsidianAdapter } from "./adapters/obsidian-adapter.js";
+import type { ObsidianVaultWatcher } from "./adapters/obsidian-watcher.js";
 import type { PlatformAdapter } from "./adapters/platform-adapter.js";
+import type { PlatformCredentials, IssueContext, AllPlatformCredentials } from "./core/claude-executor.js";
 import { sanitize } from "./utils/sanitize.js";
+
+/**
+ * Build credentials for ALL configured platforms (not just the triggering one).
+ * This lets instances from any platform call APIs on any other platform.
+ */
+export function buildAllCredentials(config: ServerConfig, db: DatabaseManager): AllPlatformCredentials {
+  const creds: AllPlatformCredentials = {};
+
+  // Linear
+  const linearToken = db.getOAuthTokenByProvider("linear")?.access_token || config.linear?.accessToken;
+  if (linearToken) {
+    creds.linear = { token: linearToken };
+  }
+
+  // Jira
+  if (config.jira?.domain && config.jira?.userEmail && config.jira?.apiToken) {
+    creds.jira = {
+      basicAuth: Buffer.from(`${config.jira.userEmail}:${config.jira.apiToken}`).toString("base64"),
+      baseUrl: `https://${config.jira.domain}.atlassian.net`
+    };
+  }
+
+  // Notion
+  const notionToken = db.getOAuthTokenByProvider("notion")?.access_token || config.notion?.accessToken;
+  if (notionToken) {
+    creds.notion = { token: notionToken };
+  }
+
+  // GitHub
+  const githubToken = db.getOAuthTokenByProvider("github")?.access_token || config.github?.accessToken;
+  if (githubToken) {
+    creds.github = { token: githubToken };
+  }
+
+  // GitLab
+  const gitlabToken = db.getOAuthTokenByProvider("gitlab")?.access_token || config.gitlab?.accessToken;
+  if (gitlabToken) {
+    creds.gitlab = { token: gitlabToken };
+  }
+
+  return creds;
+}
 
 export interface ServerConfig {
   port: number;
@@ -49,13 +96,29 @@ export interface ServerConfig {
     accessToken?: string;
     webhookSecret?: string;
   };
+  jira?: {
+    domain?: string;
+    userEmail?: string;
+    apiToken?: string;
+    webhookSecret?: string;
+  };
+  notion?: {
+    clientId?: string;
+    clientSecret?: string;
+    webhookSecret?: string;
+    accessToken?: string;
+  };
+  obsidian?: {
+    vaultPath?: string;
+  };
 }
 
 export function createServer(
   config: ServerConfig,
   db: DatabaseManager,
   instanceManager: InstanceManager,
-  executor: ClaudeExecutor
+  executor: ClaudeExecutor,
+  obsidianWatcher?: ObsidianVaultWatcher
 ): Hono {
   const app = new Hono();
 
@@ -78,6 +141,15 @@ export function createServer(
   if (config.gitlab) {
     adapters.set("gitlab", new GitLabAdapter(config.gitlab));
   }
+  if (config.jira) {
+    adapters.set("jira", new JiraAdapter(config.jira));
+  }
+  if (config.notion) {
+    adapters.set("notion", new NotionAdapter(config.notion));
+  }
+  if (config.obsidian?.vaultPath) {
+    adapters.set("obsidian", new ObsidianAdapter(config.obsidian.vaultPath, obsidianWatcher));
+  }
 
   // Health check
   app.get("/health", async (c) => {
@@ -92,18 +164,24 @@ export function createServer(
         github: `${publicUrl}/webhook/github`,
         linear: `${publicUrl}/webhook/linear`,
         gmail: `${publicUrl}/webhook/gmail`,
-        gitlab: `${publicUrl}/webhook/gitlab`
+        gitlab: `${publicUrl}/webhook/gitlab`,
+        jira: `${publicUrl}/webhook/jira`,
+        notion: `${publicUrl}/webhook/notion`
       } : null,
       oauth: publicUrl ? {
         github: `${publicUrl}/setup/github`,
         linear: `${publicUrl}/setup/linear`,
-        gmail: `${publicUrl}/setup/gmail`
+        gmail: `${publicUrl}/setup/gmail`,
+        notion: `${publicUrl}/setup/notion`
       } : null,
       platforms: {
         linear: adapters.has("linear"),
         gmail: adapters.has("gmail"),
         github: adapters.has("github"),
-        gitlab: adapters.has("gitlab")
+        gitlab: adapters.has("gitlab"),
+        jira: adapters.has("jira"),
+        notion: adapters.has("notion"),
+        obsidian: adapters.has("obsidian")
       },
       authenticatedUsers: {
         github: db.getPlatformUsername("github") || null,
@@ -115,7 +193,7 @@ export function createServer(
 
   // Webhook endpoints
   app.post("/webhook/:platform", async (c) => {
-    const platform = c.req.param("platform") as "linear" | "gmail" | "github" | "gitlab";
+    const platform = c.req.param("platform") as "linear" | "gmail" | "github" | "gitlab" | "jira" | "notion";
     const adapter = adapters.get(platform);
 
     if (!adapter) {
@@ -255,12 +333,11 @@ export function createServer(
     // Execute Claude
     const isResume = result.action === "RESUME";
 
-    // Build repo metadata for PR/MR events
+    // Build repo metadata for PR/MR events (or refresh token for resumes)
     let repoMeta: RepoMeta | undefined;
     if (event.repoCloneUrl && event.prBranch && adapter.getAuthCloneUrl) {
       try {
         const authCloneUrl = await adapter.getAuthCloneUrl(event.repoCloneUrl, installationId);
-        // Extract repo name from clone URL (e.g. "owner/repo" from "https://github.com/owner/repo.git")
         const repoName = event.repoCloneUrl.replace(/\.git$/, "").split("/").slice(-2).join("/");
         repoMeta = {
           authCloneUrl,
@@ -270,7 +347,7 @@ export function createServer(
           repoName
         };
 
-        // Store repoMeta in instance context
+        // Store/update repoMeta in instance context (refreshes auth token on resume)
         const ctx = await instanceManager.loadContext(result.instanceId!);
         if (ctx) {
           ctx.repoMeta = repoMeta;
@@ -281,7 +358,63 @@ export function createServer(
       }
     }
 
-    const eventMeta = { isPullRequest: event.isPullRequest, diffContent: event.diffContent, repoMeta };
+    // Build platform credentials for the executor prompt
+    let platformCredentials: PlatformCredentials | undefined;
+    let issueCtx: IssueContext | undefined;
+
+    if (platform === "linear") {
+      const linearToken = dbToken?.access_token || config.linear?.accessToken;
+      if (linearToken) {
+        platformCredentials = {
+          type: "linear",
+          token: linearToken,
+          projectKey: event.projectKey
+        };
+      }
+    } else if (platform === "jira" && config.jira) {
+      if (config.jira.domain && config.jira.userEmail && config.jira.apiToken) {
+        platformCredentials = {
+          type: "jira",
+          basicAuth: Buffer.from(`${config.jira.userEmail}:${config.jira.apiToken}`).toString("base64"),
+          baseUrl: `https://${config.jira.domain}.atlassian.net`,
+          projectKey: event.projectKey
+        };
+      }
+    } else if (platform === "notion") {
+      const notionToken = dbToken?.access_token || config.notion?.accessToken;
+      if (notionToken) {
+        platformCredentials = {
+          type: "notion",
+          token: notionToken
+        };
+      }
+    }
+
+    if (event.issueTitle || event.issueUrl || event.parentIssueId || event.projectKey) {
+      issueCtx = {
+        title: event.issueTitle,
+        issueUrl: event.issueUrl,
+        parentIssueId: event.parentIssueId,
+        projectKey: event.projectKey
+      };
+    }
+
+    // Store platformCredentials and issueContext in instance context for resume
+    if (platformCredentials || issueCtx) {
+      try {
+        const ctx = await instanceManager.loadContext(result.instanceId!);
+        if (ctx) {
+          if (platformCredentials) ctx.platformCredentials = platformCredentials;
+          if (issueCtx) ctx.issueContext = issueCtx;
+          await instanceManager.saveContext(result.instanceId!, ctx);
+        }
+      } catch (err) {
+        console.error("[Server] Failed to save platform context:", err);
+      }
+    }
+
+    const allCredentials = buildAllCredentials(config, db);
+    const eventMeta = { isPullRequest: event.isPullRequest, diffContent: event.diffContent, repoMeta, platformCredentials, issueContext: issueCtx, allCredentials, spawnPort: config.port };
     executor.execute(result.instanceId!, isResume, callbacks, eventMeta).catch((err) => {
       console.error(`[Server] Execution error:`, err);
     });
@@ -295,7 +428,7 @@ export function createServer(
 
   // OAuth callback endpoints
   app.get("/oauth/callback/:platform", async (c) => {
-    const platform = c.req.param("platform") as "linear" | "gmail" | "github";
+    const platform = c.req.param("platform") as "linear" | "gmail" | "github" | "notion";
     const adapter = adapters.get(platform);
 
     if (!adapter || !adapter.handleCallback) {
@@ -366,7 +499,7 @@ export function createServer(
 
   // Setup initiation endpoints (for CLI to open in browser)
   app.get("/setup/:platform", (c) => {
-    const platform = c.req.param("platform") as "linear" | "gmail" | "github";
+    const platform = c.req.param("platform") as "linear" | "gmail" | "github" | "notion";
     const adapter = adapters.get(platform);
 
     if (!adapter || !adapter.getAuthUrl) {
@@ -382,6 +515,11 @@ export function createServer(
 
   // API endpoints for MCP tools
   app.get("/api/instances", (c) => {
+    const projectId = c.req.query("project_id");
+    if (projectId) {
+      const instances = db.getProjectInstances(projectId);
+      return c.json({ instances });
+    }
     const instances = instanceManager.getAllInstances(50);
     return c.json({ instances });
   });
@@ -395,13 +533,119 @@ export function createServer(
     }
 
     const messages = instanceManager.getMessages(id);
-    return c.json({ instance, messages });
+    const children = db.getChildInstances(id);
+    return c.json({ instance, messages, children });
   });
 
   app.post("/api/instances/:id/kill", (c) => {
     const id = c.req.param("id");
     const killed = executor.kill(id);
     return c.json({ success: killed });
+  });
+
+  // Spawn API — create and execute a new instance programmatically
+  app.post("/api/spawn", async (c) => {
+    try {
+      const body = await c.req.json();
+      const {
+        prompt,
+        platform,
+        repo_url,
+        branch,
+        base_branch,
+        parent_instance_id,
+        project_id,
+        working_dir
+      } = body as {
+        prompt: string;
+        platform?: string;
+        repo_url?: string;
+        branch?: string;
+        base_branch?: string;
+        parent_instance_id?: string;
+        project_id?: string;
+        working_dir?: string;
+      };
+
+      if (!prompt) {
+        return c.json({ error: "prompt is required" }, 400);
+      }
+
+      // Determine platform — inherit from parent if not specified
+      let instancePlatform: Instance["platform"] = "github";
+      if (platform) {
+        instancePlatform = platform as Instance["platform"];
+      } else if (parent_instance_id) {
+        const parent = instanceManager.getInstance(parent_instance_id);
+        if (parent) instancePlatform = parent.platform;
+      }
+
+      // Create a synthetic trigger context
+      const threadId = `spawn-${crypto.randomUUID().slice(0, 8)}`;
+      const triggerContext: import("./core/trigger-detector.js").TriggerContext = {
+        threadId,
+        platform: instancePlatform,
+        content: `Dear Claude, ${prompt}`,
+        isDescription: true,
+        timestamp: Date.now()
+      };
+
+      const createResult = await instanceManager.processEvent(triggerContext);
+      if (!createResult.instanceId) {
+        return c.json({ error: "Failed to create instance" }, 500);
+      }
+
+      const instanceId = createResult.instanceId;
+
+      // Set parent/project on the instance
+      if (parent_instance_id || project_id) {
+        const updates: string[] = [];
+        const values: any[] = [];
+        if (parent_instance_id) { updates.push("parent_instance_id = ?"); values.push(parent_instance_id); }
+        if (project_id) { updates.push("project_id = ?"); values.push(project_id); }
+        values.push(instanceId);
+        db.getDatabase().prepare(`UPDATE instances SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+      }
+
+      // Override working dir if specified
+      if (working_dir) {
+        db.getDatabase().prepare("UPDATE instances SET working_dir = ? WHERE id = ?").run(working_dir, instanceId);
+      }
+
+      // Build repo metadata if repo_url + branch provided
+      let repoMeta: RepoMeta | undefined;
+      if (repo_url && branch) {
+        const repoName = repo_url.replace(/\.git$/, "").replace(/^https?:\/\/[^/]+\//, "");
+        // Try to build auth clone URL using GitHub or GitLab adapter
+        let authCloneUrl = repo_url;
+        const githubAdapter = adapters.get("github");
+        const gitlabAdapter = adapters.get("gitlab");
+        if (repo_url.includes("github.com") && githubAdapter?.getAuthCloneUrl) {
+          try { authCloneUrl = await githubAdapter.getAuthCloneUrl(repo_url); } catch {}
+        } else if (repo_url.includes("gitlab.com") && gitlabAdapter?.getAuthCloneUrl) {
+          try { authCloneUrl = await gitlabAdapter.getAuthCloneUrl(repo_url); } catch {}
+        }
+        repoMeta = {
+          authCloneUrl,
+          branch,
+          baseBranch: base_branch || "main",
+          prNumber: 0,
+          repoName
+        };
+      }
+
+      // Build all credentials and execute
+      const allCredentials = buildAllCredentials(config, db);
+      const eventMeta = { repoMeta, allCredentials, spawnPort: config.port };
+      executor.execute(instanceId, false, undefined, eventMeta).catch((err) => {
+        console.error(`[Server] Spawn execution error:`, err);
+      });
+
+      return c.json({ instance_id: instanceId, status: "pending" });
+    } catch (err: any) {
+      console.error("[Server] Spawn error:", err);
+      return c.json({ error: err.message || "Spawn failed" }, 500);
+    }
   });
 
   app.get("/api/platforms", (c) => {

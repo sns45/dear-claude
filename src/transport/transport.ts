@@ -31,6 +31,7 @@ export class TransportManager {
   private publicUrl: string = "";
   private hostname: string = "";
   private config: TransportConfig;
+  private healthCheckInterval?: ReturnType<typeof setInterval>;
 
   constructor(config: TransportConfig) {
     this.config = config;
@@ -291,10 +292,86 @@ export class TransportManager {
     return hostname;
   }
 
+  /**
+   * Read current serve config via LocalAPI to avoid overwriting other paths.
+   * Returns the parsed config or null if none exists.
+   */
+  private async getServeConfig(): Promise<Record<string, any> | null> {
+    try {
+      const { stdout } = await execAsync("tailscale serve status --json 2>/dev/null");
+      const config = JSON.parse(stdout);
+      // Empty config check
+      if (!config || (Object.keys(config).length === 0)) return null;
+      return config;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Set serve config by merging our /dc path into the existing config,
+   * preserving other paths (e.g. /bcc from better-call-claude).
+   *
+   * Tailscale serve config structure:
+   * {
+   *   "TCP": { "443": { "HTTPS": true } },
+   *   "Web": { "${hostname}:443": { "Handlers": { "/dc": { "Proxy": "http://127.0.0.1:${port}" } } } },
+   *   "AllowFunnel": { "${hostname}:443": true }
+   * }
+   */
+  private async setMergedFunnelConfig(port: number): Promise<void> {
+    const hostPort = `${this.hostname}:443`;
+    const existing = await this.getServeConfig() || {};
+
+    // Merge TCP
+    const tcp = existing.TCP || {};
+    tcp["443"] = { HTTPS: true };
+
+    // Merge Web handlers — preserve existing paths, add/update /dc
+    const web = existing.Web || {};
+    const handlers = web[hostPort]?.Handlers || {};
+    handlers["/dc"] = { Proxy: `http://127.0.0.1:${port}` };
+    web[hostPort] = { Handlers: handlers };
+
+    // Merge AllowFunnel
+    const allowFunnel = existing.AllowFunnel || {};
+    allowFunnel[hostPort] = true;
+
+    const merged = { ...existing, TCP: tcp, Web: web, AllowFunnel: allowFunnel };
+
+    // Write config atomically via stdin to avoid shell escaping issues
+    const configJson = JSON.stringify(merged);
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn("tailscale", ["serve", "--set-raw"], {
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stderr = "";
+      child.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+      child.on("close", (code: number | null) => {
+        if (code === 0) resolve();
+        else reject(new Error(`tailscale serve --set-raw failed (${code}): ${stderr}`));
+      });
+      child.on("error", reject);
+      child.stdin?.write(configJson);
+      child.stdin?.end();
+    });
+  }
+
   private async enableFunnel(port: number): Promise<void> {
     try {
-      // Use --bg flag to run funnel in background (persists after process exits)
-      // Use --set-path=/dc to clearly differentiate from other services (e.g., better-call-claude on /bcc)
+      // Try merge-aware config first (preserves other paths like /bcc)
+      try {
+        await this.setMergedFunnelConfig(port);
+        console.log("[Tailscale Funnel] Config merged — /dc path set, other paths preserved");
+        this.startFunnelHealthCheck(port);
+        return;
+      } catch (mergeErr) {
+        // --set-raw may not be available on older Tailscale versions; fall back to CLI
+        const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+        console.log(`[Tailscale] Merge-aware config failed (${msg}), falling back to CLI...`);
+      }
+
+      // Fallback: use --bg --set-path (may overwrite other paths on buggy versions)
       const { stdout, stderr } = await execAsync(`tailscale funnel --bg --set-path=/dc ${port} 2>&1`);
       const output = stdout + stderr;
 
@@ -303,20 +380,60 @@ export class TransportManager {
       }
 
       console.log(`[Tailscale Funnel] ${output.trim()}`);
+      this.startFunnelHealthCheck(port);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
 
-      // Check for specific errors
       if (message.includes("not enabled") || message.includes("policy")) {
         this.printFunnelInstructions();
         throw new Error("Tailscale Funnel not enabled on your tailnet");
+      }
+
+      if (message.includes("foreground listener")) {
+        console.log("[Tailscale] Foreground listener blocking port 443, killing it...");
+        try {
+          await execAsync(`pkill -f "tailscale funnel" 2>/dev/null; pkill -f "tailscale serve" 2>/dev/null`).catch(() => {});
+          await new Promise(r => setTimeout(r, 2000));
+          await this.enableFunnel(port);
+          return;
+        } catch (retryError) {
+          throw new Error(`Failed to start Tailscale Funnel after retry: ${retryError instanceof Error ? retryError.message : retryError}`);
+        }
       }
 
       throw new Error(`Failed to start Tailscale Funnel: ${message}`);
     }
   }
 
+  private startFunnelHealthCheck(port: number): void {
+    // Check every 10 seconds that our /dc path is still in the config
+    this.healthCheckInterval = setInterval(async () => {
+      try {
+        const config = await this.getServeConfig();
+        const hostPort = `${this.hostname}:443`;
+        const hasPath = config?.Web?.[hostPort]?.Handlers?.["/dc"];
+
+        if (!hasPath) {
+          console.log("[Tailscale] Health check: /dc path missing, re-merging config...");
+          try {
+            await this.setMergedFunnelConfig(port);
+            console.log("[Tailscale] Config re-merged successfully");
+          } catch {
+            // Fall back to CLI
+            await execAsync(`tailscale funnel --bg --set-path=/dc ${port} 2>&1`);
+            console.log("[Tailscale] Funnel restarted via CLI fallback");
+          }
+        }
+      } catch {
+        // Silently ignore health check errors
+      }
+    }, 10_000);
+  }
+
   async stop(): Promise<void> {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+    }
     console.log("[Tailscale] Funnel runs in background - use 'tailscale funnel off' to disable");
   }
 

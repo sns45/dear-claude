@@ -6,8 +6,8 @@ describe("TriggerDetector.containsTrigger", () => {
     expect(TriggerDetector.containsTrigger("dear claude, help me")).toBe(true);
   });
 
-  test("matches 'dear-claude'", () => {
-    expect(TriggerDetector.containsTrigger("dear-claude please do this")).toBe(true);
+  test("does not match 'dear-claude' (hyphenated)", () => {
+    expect(TriggerDetector.containsTrigger("dear-claude please do this")).toBe(false);
   });
 
   test("matches 'Dear Claude' (case insensitive)", () => {
@@ -18,8 +18,8 @@ describe("TriggerDetector.containsTrigger", () => {
     expect(TriggerDetector.containsTrigger("DEAR CLAUDE do something")).toBe(true);
   });
 
-  test("matches 'dearclaude' (no separator)", () => {
-    expect(TriggerDetector.containsTrigger("dearclaude fix this")).toBe(true);
+  test("does not match 'dearclaude' (no space)", () => {
+    expect(TriggerDetector.containsTrigger("dearclaude fix this")).toBe(false);
   });
 
   test("does not match unrelated text", () => {
@@ -40,8 +40,8 @@ describe("TriggerDetector.extractRequest", () => {
     expect(TriggerDetector.extractRequest("Dear Claude, fix the bug")).toBe("fix the bug");
   });
 
-  test("extracts text after 'dear-claude:'", () => {
-    expect(TriggerDetector.extractRequest("dear-claude: build a thing")).toBe("build a thing");
+  test("returns full content for 'dear-claude:' (hyphenated, no match)", () => {
+    expect(TriggerDetector.extractRequest("dear-claude: build a thing")).toBe("dear-claude: build a thing");
   });
 
   test("returns full content if no trigger", () => {

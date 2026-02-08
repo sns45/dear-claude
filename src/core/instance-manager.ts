@@ -18,6 +18,22 @@ export interface RepoMeta {
   repoName: string;
 }
 
+export interface PlatformCredentialsContext {
+  type: "linear" | "jira" | "github" | "gitlab" | "notion";
+  token?: string;
+  basicAuth?: string;
+  baseUrl?: string;
+  teamId?: string;
+  projectKey?: string;
+}
+
+export interface IssueContextData {
+  title?: string;
+  issueUrl?: string;
+  parentIssueId?: string;
+  projectKey?: string;
+}
+
 export interface InstanceContext {
   originalPrompt: string;
   conversationHistory: Array<{ role: "user" | "assistant"; content: string }>;
@@ -25,6 +41,8 @@ export interface InstanceContext {
   filesCreated: string[];
   workingDir: string;
   repoMeta?: RepoMeta;
+  platformCredentials?: PlatformCredentialsContext;
+  issueContext?: IssueContextData;
 }
 
 export interface CreateInstanceResult {
@@ -150,6 +168,10 @@ export class InstanceManager {
     console.log(`[InstanceManager] Instance ${instanceId} status: ${status}`);
   }
 
+  updateSessionId(instanceId: string, sessionId: string): void {
+    this.db.updateSessionId(instanceId, sessionId);
+  }
+
   /**
    * Add a message to instance conversation
    */
@@ -244,7 +266,7 @@ export class InstanceManager {
   /**
    * Build context prompt for resuming an instance
    */
-  async buildResumePrompt(instanceId: string, newRequest: string): Promise<string> {
+  async buildResumePrompt(instanceId: string, newRequest: string, allCredentials?: import("./claude-executor.js").AllPlatformCredentials): Promise<string> {
     const instance = this.getInstance(instanceId);
     const context = await this.loadContext(instanceId);
 
@@ -256,13 +278,121 @@ export class InstanceManager {
       .map((m, i) => `[${m.role}]: ${m.content.slice(0, 200)}${m.content.length > 200 ? "..." : ""}`)
       .join("\n");
 
-    const repoSection = context.repoMeta ? `
+    let repoSection = "";
+    if (context.repoMeta) {
+      const rm = context.repoMeta;
+      repoSection = `
 ## Repository Access
-The repo is at ~/dev/${context.repoMeta.repoName}. Run:
-  cd ~/dev/${context.repoMeta.repoName} && git fetch origin && git checkout ${context.repoMeta.branch} && git pull origin ${context.repoMeta.branch}
-To push changes: git add -A && git commit -m "description" && git push origin ${context.repoMeta.branch}
+
+Base repo location: ~/dev/${rm.repoName}
+
+### Setup (run these commands):
+\`\`\`bash
+if [ -d ~/dev/${rm.repoName}/.git ]; then
+  cd ~/dev/${rm.repoName}
+  git fetch origin
+  git worktree add .worktrees/${rm.branch} -b ${rm.branch} origin/${rm.baseBranch} 2>/dev/null || \\
+    git worktree add .worktrees/${rm.branch} ${rm.branch} 2>/dev/null || \\
+    (cd ~/dev/${rm.repoName} && git checkout ${rm.branch} && git pull origin ${rm.branch})
+else
+  git clone ${rm.authCloneUrl} ~/dev/${rm.repoName}
+  cd ~/dev/${rm.repoName}
+fi
+\`\`\`
+
+If using worktree, work in: ~/dev/${rm.repoName}/.worktrees/${rm.branch}
+Otherwise: ~/dev/${rm.repoName}
+
 The clone URL includes auth — no password needed.
-` : "";
+`;
+    }
+
+    let issueContextSection = "";
+    if (context.issueContext) {
+      const ic = context.issueContext;
+      issueContextSection = `
+## Issue Context
+${ic.title ? `**Title**: ${ic.title}` : ""}
+${ic.issueUrl ? `**URL**: ${ic.issueUrl}` : ""}
+${ic.projectKey ? `**Project**: ${ic.projectKey}` : ""}
+${ic.parentIssueId ? `**Parent Issue**: ${ic.parentIssueId}` : ""}
+`;
+    }
+
+    // Use allCredentials (loaded fresh with current tokens) rather than stale saved credentials
+    let platformApiSection = "";
+    if (allCredentials) {
+      // Re-use executor helpers via inline sections (keep resume prompt self-contained)
+      if (allCredentials.linear) {
+        platformApiSection += `
+## Linear API Access
+You can interact with Linear using curl with this token:
+Authorization: ${allCredentials.linear.token}
+
+Create sub-issues, update status, and query workflow states via the Linear GraphQL API (https://api.linear.app/graphql).
+`;
+      }
+      if (allCredentials.jira) {
+        platformApiSection += `
+## Jira API Access
+You can interact with Jira using curl:
+Base URL: ${allCredentials.jira.baseUrl}
+Authorization: Basic ${allCredentials.jira.basicAuth}
+
+Create sub-tasks, transition status, and add comments via the Jira REST API v2.
+`;
+      }
+      if (allCredentials.notion) {
+        platformApiSection += `
+## Notion API Access
+You can interact with Notion using curl:
+Authorization: Bearer ${allCredentials.notion.token}
+Notion-Version: 2022-06-28
+
+Query databases, create pages, and update properties via the Notion API (https://api.notion.com/v1).
+`;
+      }
+      if (allCredentials.github) {
+        platformApiSection += `
+## GitHub API Access
+You can interact with GitHub using curl:
+Authorization: Bearer ${allCredentials.github.token}
+
+Create issues, PRs, add labels and comments via the GitHub REST API (https://api.github.com).
+`;
+      }
+      if (allCredentials.gitlab) {
+        platformApiSection += `
+## GitLab API Access
+You can interact with GitLab using curl:
+PRIVATE-TOKEN: ${allCredentials.gitlab.token}
+
+Create issues, merge requests, and add comments via the GitLab API (${allCredentials.gitlab.apiUrl || "https://gitlab.com/api/v4"}).
+`;
+      }
+    } else if (context.platformCredentials) {
+      // Fallback: use saved credentials if allCredentials not provided
+      const creds = context.platformCredentials;
+      if (creds.type === "linear" && creds.token) {
+        platformApiSection = `
+## Linear API Access
+Authorization: ${creds.token}
+Create sub-issues, update status via Linear GraphQL API.
+`;
+      } else if (creds.type === "jira" && creds.basicAuth && creds.baseUrl) {
+        platformApiSection = `
+## Jira API Access
+Base URL: ${creds.baseUrl} | Authorization: Basic ${creds.basicAuth}
+Create sub-tasks, transition status via Jira REST API v2.
+`;
+      } else if (creds.type === "notion" && creds.token) {
+        platformApiSection = `
+## Notion API Access
+Authorization: Bearer ${creds.token}
+Query databases, create pages via Notion API.
+`;
+      }
+    }
 
     return `
 ## IMPORTANT: Resuming Previous Session (Instance: ${instanceId.slice(0, 8)})
@@ -280,7 +410,7 @@ ${conversationSummary}
 ---
 
 **New Request**: "${newRequest}"
-${repoSection}
+${repoSection}${issueContextSection}${platformApiSection}
 ## Available MCP Tools
 
 You have access to MCP (Model Context Protocol) servers:

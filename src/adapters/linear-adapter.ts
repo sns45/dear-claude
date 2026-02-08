@@ -29,6 +29,7 @@ interface LinearWebhookPayload {
   type: string;
   action: string;
   data: LinearIssue | LinearComment;
+  updatedFrom?: Record<string, unknown>;
   organizationId: string;
   createdAt: string;
 }
@@ -85,25 +86,58 @@ export class LinearAdapter implements PlatformAdapter {
 
     if (payload.type === "Issue" && payload.action === "create") {
       const issue = payload.data as LinearIssue;
+      const issueContext = await this.fetchIssueContext(issue.id);
       return {
         platform: "linear",
         threadId: issue.id,
         content: `${issue.title || ""}\n${issue.description || ""}`,
         isDescription: true,
         authorId: issue.creatorId,
+        issueTitle: issueContext?.title || issue.title,
+        issueDescription: issueContext?.description || issue.description,
+        issueUrl: issueContext?.url || issue.url,
+        projectKey: issueContext?.teamKey,
+        parentIssueId: issueContext?.parentId,
+        raw: payload
+      };
+    }
+
+    // Handle issue description updates (e.g. user edits description to add "Dear Claude")
+    if (payload.type === "Issue" && payload.action === "update") {
+      if (!payload.updatedFrom || !("description" in payload.updatedFrom)) return null;
+      const issue = payload.data as LinearIssue;
+      const issueContext = await this.fetchIssueContext(issue.id);
+      return {
+        platform: "linear",
+        threadId: issue.id,
+        content: `${issue.title || ""}\n${issue.description || ""}`,
+        isDescription: true,
+        authorId: issue.creatorId,
+        issueTitle: issueContext?.title || issue.title,
+        issueDescription: issueContext?.description || issue.description,
+        issueUrl: issueContext?.url || issue.url,
+        projectKey: issueContext?.teamKey,
+        parentIssueId: issueContext?.parentId,
         raw: payload
       };
     }
 
     if (payload.type === "Comment" && payload.action === "create") {
       const comment = payload.data as LinearComment;
+      const threadId = comment.issueId || comment.issue?.id || "";
+      const issueContext = threadId ? await this.fetchIssueContext(threadId) : null;
       return {
         platform: "linear",
-        threadId: comment.issueId || comment.issue?.id || "",
+        threadId,
         content: comment.body || "",
         isDescription: false,
         messageId: comment.id,
         authorId: comment.userId,
+        issueTitle: issueContext?.title,
+        issueDescription: issueContext?.description,
+        issueUrl: issueContext?.url,
+        projectKey: issueContext?.teamKey,
+        parentIssueId: issueContext?.parentId,
         raw: payload
       };
     }
@@ -233,6 +267,32 @@ export class LinearAdapter implements PlatformAdapter {
     }
   }
 
+  private async fetchIssueContext(issueId: string): Promise<{
+    title: string; description?: string; identifier: string; url: string;
+    teamKey: string; parentId?: string;
+  } | null> {
+    if (!this.config.accessToken) return null;
+    try {
+      const query = `query { issue(id: "${issueId}") { title description identifier url team { key } parent { id } } }`;
+      const result = await this.graphql(query) as {
+        data?: { issue?: { title: string; description?: string; identifier: string; url: string; team: { key: string }; parent?: { id: string } } }
+      };
+      const issue = result.data?.issue;
+      if (!issue) return null;
+      return {
+        title: issue.title,
+        description: issue.description,
+        identifier: issue.identifier,
+        url: issue.url,
+        teamKey: issue.team.key,
+        parentId: issue.parent?.id
+      };
+    } catch (err) {
+      console.error("[LinearAdapter] Failed to fetch issue context:", err);
+      return null;
+    }
+  }
+
   private async graphql(query: string): Promise<unknown> {
     const response = await fetch(this.apiUrl, {
       method: "POST",
@@ -263,7 +323,11 @@ export class LinearAdapter implements PlatformAdapter {
     return `${this.authUrl}?${params.toString()}`;
   }
 
-  async handleCallback(code: string, redirectUri: string): Promise<{ accessToken: string; refreshToken?: string }> {
+  setAccessToken(token: string): void {
+    this.config.accessToken = token;
+  }
+
+  async handleCallback(code: string, redirectUri: string): Promise<{ accessToken: string; refreshToken?: string; username?: string }> {
     // Linear uses PKCE, but for server-side flow we can use standard OAuth
     const response = await fetch(this.tokenUrl, {
       method: "POST",
@@ -285,9 +349,28 @@ export class LinearAdapter implements PlatformAdapter {
     }
 
     const data = await response.json() as { access_token: string; refresh_token?: string };
+
+    // Fetch the authenticated user's Linear ID
+    let username: string | undefined;
+    try {
+      const viewerResult = await fetch(this.apiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": data.access_token },
+        body: JSON.stringify({ query: "{ viewer { id name } }" })
+      });
+      if (viewerResult.ok) {
+        const viewerData = await viewerResult.json() as { data?: { viewer?: { id: string; name: string } } };
+        username = viewerData.data?.viewer?.id;
+        console.log(`[LinearAdapter] Authenticated as: ${viewerData.data?.viewer?.name} (${username})`);
+      }
+    } catch (err) {
+      console.error("[LinearAdapter] Failed to fetch viewer:", err);
+    }
+
     return {
       accessToken: data.access_token,
-      refreshToken: data.refresh_token
+      refreshToken: data.refresh_token,
+      username
     };
   }
 

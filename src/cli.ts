@@ -11,6 +11,7 @@ import { ClaudeExecutor } from "./core/claude-executor.js";
 import { TransportManager } from "./transport/transport.js";
 import { createServer, type ServerConfig } from "./server.js";
 import { startMCPServer } from "./mcp.js";
+import { ObsidianVaultWatcher } from "./adapters/obsidian-watcher.js";
 
 function getConfig(): ServerConfig {
   return {
@@ -37,6 +38,21 @@ function getConfig(): ServerConfig {
     gitlab: {
       accessToken: process.env.GITLAB_ACCESS_TOKEN,
       webhookSecret: process.env.GITLAB_WEBHOOK_SECRET
+    },
+    jira: {
+      domain: process.env.JIRA_DOMAIN,
+      userEmail: process.env.JIRA_USER_EMAIL,
+      apiToken: process.env.JIRA_API_TOKEN,
+      webhookSecret: process.env.JIRA_WEBHOOK_SECRET
+    },
+    notion: {
+      clientId: process.env.NOTION_CLIENT_ID,
+      clientSecret: process.env.NOTION_CLIENT_SECRET,
+      webhookSecret: process.env.NOTION_WEBHOOK_SECRET,
+      accessToken: process.env.NOTION_ACCESS_TOKEN
+    },
+    obsidian: {
+      vaultPath: process.env.OBSIDIAN_VAULT_PATH
     }
   };
 }
@@ -98,8 +114,92 @@ export function createCLI(): Command {
         }
       }
 
+      // Start Obsidian vault watcher if configured
+      let obsidianWatcher: ObsidianVaultWatcher | undefined;
+      if (config.obsidian?.vaultPath) {
+        obsidianWatcher = new ObsidianVaultWatcher({
+          vaultPath: config.obsidian.vaultPath,
+          debounceMs: parseInt(process.env.OBSIDIAN_WATCH_DEBOUNCE_MS || "2000", 10)
+        });
+      }
+
       // Create Hono app
-      const app = createServer(config, db, instanceManager, executor);
+      const app = createServer(config, db, instanceManager, executor, obsidianWatcher);
+
+      // Start Obsidian watcher after server is created (needs the processEvent pipeline)
+      if (obsidianWatcher) {
+        obsidianWatcher.start(instanceManager, async (event) => {
+          // Check for trigger (already checked in watcher, but belt-and-suspenders)
+          const { TriggerDetector } = await import("./core/trigger-detector.js");
+          if (!TriggerDetector.containsTrigger(event.content)) return;
+
+          const triggerContext = {
+            threadId: event.threadId,
+            platform: event.platform as "obsidian",
+            content: event.content,
+            isDescription: event.isDescription,
+            messageId: event.messageId,
+            authorId: event.authorId,
+            timestamp: Date.now()
+          };
+
+          const result = await instanceManager.processEvent(triggerContext);
+          console.log(`[Obsidian] Trigger result for ${event.threadId}: ${result.action} - ${result.reason}`);
+
+          if (result.action === "IGNORE") return;
+
+          // For Obsidian, override working dir to be the vault path
+          const instance = instanceManager.getInstance(result.instanceId!);
+          if (instance && config.obsidian?.vaultPath) {
+            // Update the instance working dir to be the vault
+            db.getDatabase().prepare("UPDATE instances SET working_dir = ? WHERE id = ?")
+              .run(config.obsidian.vaultPath, result.instanceId!);
+          }
+
+          // Import adapter for callbacks
+          const { ObsidianAdapter } = await import("./adapters/obsidian-adapter.js");
+          const adapter = new ObsidianAdapter(config.obsidian!.vaultPath!, obsidianWatcher);
+          adapter.setInstanceId(result.instanceId!);
+          const { sanitize } = await import("./utils/sanitize.js");
+
+          const callbacks = {
+            onStart: async (_id: string, _msg: string) => {
+              try {
+                await adapter.setStatus(event.threadId, "processing");
+              } catch (err) {
+                console.error("[Obsidian] Failed to set processing status:", err);
+              }
+            },
+            onComplete: async (id: string, summary: string) => {
+              try {
+                const latest = instanceManager.getInstance(id);
+                if (latest?.claude_session_id) adapter.setSessionId(latest.claude_session_id);
+                const safeSummary = sanitize(summary);
+                await adapter.postResponse(event.threadId, safeSummary);
+                await adapter.setStatus(event.threadId, "done");
+              } catch (err) {
+                console.error("[Obsidian] Failed to post response:", err);
+              }
+            },
+            onError: async (id: string, error: string) => {
+              try {
+                const latest = instanceManager.getInstance(id);
+                if (latest?.claude_session_id) adapter.setSessionId(latest.claude_session_id);
+                const safeError = sanitize(error);
+                await adapter.postResponse(event.threadId, `**Error**\n${safeError}`);
+                await adapter.setStatus(event.threadId, "error");
+              } catch (err) {
+                console.error("[Obsidian] Failed to post error:", err);
+              }
+            }
+          };
+
+          const isResume = result.action === "RESUME";
+          executor.execute(result.instanceId!, isResume, callbacks).catch((err) => {
+            console.error("[Obsidian] Execution error:", err);
+          });
+        });
+      }
 
       // Start server
       const server = serve({
@@ -115,10 +215,17 @@ export function createCLI(): Command {
         console.log(`   Gmail:   ${config.publicUrl}/webhook/gmail`);
         console.log(`   GitHub:  ${config.publicUrl}/webhook/github`);
         console.log(`   GitLab:  ${config.publicUrl}/webhook/gitlab`);
+        console.log(`   Jira:    ${config.publicUrl}/webhook/jira`);
+        console.log(`   Notion:  ${config.publicUrl}/webhook/notion`);
         console.log(`\n🔐 OAuth Setup:`);
         console.log(`   Linear:  ${config.publicUrl}/setup/linear`);
         console.log(`   Gmail:   ${config.publicUrl}/setup/gmail`);
         console.log(`   GitHub:  ${config.publicUrl}/setup/github`);
+        console.log(`   Notion:  ${config.publicUrl}/setup/notion`);
+      }
+
+      if (obsidianWatcher) {
+        console.log(`\n📓 Obsidian vault: ${config.obsidian!.vaultPath}`);
       }
 
       console.log(`\n✅ Health check: http://localhost:${config.port}/health`);
@@ -126,6 +233,7 @@ export function createCLI(): Command {
       // Handle shutdown
       const shutdown = async () => {
         console.log("\n\nShutting down...");
+        if (obsidianWatcher) obsidianWatcher.stop();
         await executor.cleanup();
         if (transport) await transport.stop();
         db.close();
@@ -151,6 +259,9 @@ export function createCLI(): Command {
       console.log(`  Gmail:   ${config.gmail?.accessToken ? "✅ Connected" : config.gmail?.clientId ? "⚠️  OAuth configured" : "❌ Not configured"}`);
       console.log(`  GitHub:  ${config.github?.accessToken ? "✅ Connected" : config.github?.clientId ? "⚠️  OAuth configured" : "❌ Not configured"}`);
       console.log(`  GitLab:  ${config.gitlab?.accessToken ? "✅ Connected" : "❌ Not configured"}`);
+      console.log(`  Jira:    ${config.jira?.apiToken ? "✅ Connected" : config.jira?.domain ? "⚠️  Domain configured" : "❌ Not configured"}`);
+      console.log(`  Notion:  ${config.notion?.accessToken ? "✅ Connected" : config.notion?.clientId ? "⚠️  OAuth configured" : "❌ Not configured"}`);
+      console.log(`  Obsidian: ${config.obsidian?.vaultPath ? `✅ Vault: ${config.obsidian.vaultPath}` : "❌ Not configured"}`);
 
       // Check database
       try {
@@ -252,9 +363,9 @@ export function createCLI(): Command {
   // Setup command
   program
     .command("setup <platform>")
-    .description("Configure a platform (linear, gmail, github)")
+    .description("Configure a platform (linear, gmail, github, jira, notion, obsidian)")
     .action(async (platform) => {
-      const validPlatforms = ["linear", "gmail", "github"];
+      const validPlatforms = ["linear", "gmail", "github", "jira", "notion", "obsidian"];
       if (!validPlatforms.includes(platform)) {
         console.error(`Invalid platform: ${platform}`);
         console.log(`Valid platforms: ${validPlatforms.join(", ")}`);
@@ -264,6 +375,54 @@ export function createCLI(): Command {
       const config = getConfig();
 
       console.log(`\n🔧 Setting up ${platform}...\n`);
+
+      if (platform === "jira") {
+        console.log("Jira uses API token auth (no OAuth flow needed).\n");
+        console.log("Set the following environment variables:\n");
+        console.log("  JIRA_DOMAIN=mycompany           # → mycompany.atlassian.net");
+        console.log("  JIRA_USER_EMAIL=user@example.com");
+        console.log("  JIRA_API_TOKEN=...               # From id.atlassian.com/manage-profile/security/api-tokens");
+        console.log("  JIRA_WEBHOOK_SECRET=...           # Optional shared secret for webhook validation");
+        console.log("\nThen configure a webhook in Jira Admin → System → Webhooks:");
+        console.log(`  URL: <your-public-url>/webhook/jira${config.jira?.webhookSecret ? `?secret=${config.jira.webhookSecret}` : ""}`);
+        console.log("  Events: issue_created, issue_updated, comment_created");
+        console.log("\nOnce configured, run 'dear-claude start' and Jira will be active.");
+        return;
+      }
+
+      if (platform === "notion") {
+        console.log("Notion supports OAuth or internal integration tokens.\n");
+        console.log("Option A: Internal Integration (simpler)");
+        console.log("  1. Go to https://www.notion.so/my-integrations → New integration");
+        console.log("  2. Copy the Internal Integration Secret → set NOTION_ACCESS_TOKEN");
+        console.log("  3. Share pages/databases with the integration\n");
+        console.log("Option B: OAuth (public integration)");
+        console.log("  Set: NOTION_CLIENT_ID, NOTION_CLIENT_SECRET");
+        console.log("  Visit: <your-public-url>/setup/notion\n");
+        console.log("For webhooks:");
+        console.log("  Set: NOTION_WEBHOOK_SECRET");
+        console.log(`  URL: <your-public-url>/webhook/notion`);
+        console.log("  Events: comment.created, page.content_updated");
+        return;
+      }
+
+      if (platform === "obsidian") {
+        console.log("Obsidian uses direct file watching (no API needed).\n");
+        console.log("Set the following environment variable:\n");
+        console.log("  OBSIDIAN_VAULT_PATH=/absolute/path/to/your/vault");
+        console.log("");
+        console.log("Optional:");
+        console.log("  OBSIDIAN_WATCH_DEBOUNCE_MS=2000  # Debounce delay (default 2s)");
+        console.log("\nHow it works:");
+        console.log("  1. Create or edit any .md file in your vault");
+        console.log("  2. Include 'Dear Claude' anywhere in the note");
+        console.log("  3. Claude reads the note, processes the request");
+        console.log("  4. Response is appended as a > [!claude] callout block");
+        console.log("  5. Claude gets full vault access — can read any note or image");
+        console.log("\nOnce configured, run 'dear-claude start' and Obsidian watcher will be active.");
+        return;
+      }
+
       console.log("This will start a temporary server for OAuth authentication.");
       console.log("Make sure you have configured the following environment variables:\n");
 
