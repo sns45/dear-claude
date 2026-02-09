@@ -1,14 +1,15 @@
 {
   "name": "dear-claude",
-  "version": "1.0.0",
-  "description": "MCP server that triggers local Claude Code instances from external platforms (Linear, Gmail, GitHub) when 'dear-claude' is mentioned",
+  "version": "1.0.1",
+  "mcpName": "io.github.sns45/dear-claude",
+  "description": "MCP server that triggers local Claude Code instances from external platforms (GitHub, Linear, Jira, GitLab, Notion, Obsidian, Gmail) when 'Dear Claude' is mentioned",
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
     "dear-claude": "./dist/index.js"
   },
   "files": [
-    "dist",
+    "dist/index.js",
     "README.md",
     "LICENSE"
   ],
@@ -38,11 +39,23 @@
     "linear",
     "gmail",
     "github",
+    "gitlab",
+    "jira",
+    "notion",
+    "obsidian",
     "automation",
     "dear-claude"
   ],
   "author": "Shantanu",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sns45/dear-claude.git"
+  },
+  "homepage": "https://github.com/sns45/dear-claude#readme",
+  "bugs": {
+    "url": "https://github.com/sns45/dear-claude/issues"
+  },
   "engines": {
     "node": ">=18"
   }
