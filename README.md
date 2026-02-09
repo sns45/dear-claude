@@ -49,28 +49,30 @@ Instances from **any** platform get API access to **all** configured platforms. 
 
 ## Quick Start
 
-### Prerequisites
-
-- [Bun](https://bun.sh) runtime
-- [Claude Code](https://claude.ai/claude-code) CLI installed (`claude` command available)
-- [Tailscale](https://tailscale.com/download) with Funnel enabled (for webhooks from external platforms)
-
-### 1. Install
+### Install in one line
 
 ```bash
-bun install
+claude mcp add dear-claude -- bunx dear-claude start --mcp
 ```
 
-### 2. Add to Claude Code as MCP Server
+That's it. Start Claude Code and Dear Claude is ready.
 
-Add to `~/.claude.json` under `mcpServers`:
+### Prerequisites
+
+- [Claude Code](https://claude.ai/claude-code) CLI installed (`claude` command available)
+- [Bun](https://bun.sh) runtime (for `bunx`)
+- [Tailscale](https://tailscale.com/download) with Funnel enabled (for webhooks from external platforms)
+
+### Manual setup (alternative)
+
+If you prefer manual configuration, add to `~/.claude.json` under `mcpServers`:
 
 ```json
 {
   "mcpServers": {
     "dear-claude": {
-      "command": "bun",
-      "args": ["run", "/path/to/dear-claude/src/index.ts", "start", "--mcp"],
+      "command": "bunx",
+      "args": ["dear-claude", "start", "--mcp"],
       "env": {
         "DEAR_CLAUDE_PORT": "3334",
         "GITHUB_CLIENT_ID": "...",
@@ -85,7 +87,7 @@ Add to `~/.claude.json` under `mcpServers`:
 }
 ```
 
-### 3. Start Claude Code
+Then start Claude Code:
 
 ```bash
 claude
