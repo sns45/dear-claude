@@ -10,7 +10,7 @@ import { mkdirSync, existsSync } from "fs";
 export interface Instance {
   id: string;
   thread_id: string;           // Platform-specific thread/issue ID
-  platform: "linear" | "gmail" | "github" | "gitlab" | "jira" | "notion" | "obsidian";
+  platform: "linear" | "github" | "gitlab" | "jira" | "notion" | "obsidian";
   status: "pending" | "running" | "completed" | "failed" | "idle" | "expired";
   working_dir: string;
   original_prompt: string;
@@ -34,7 +34,7 @@ export interface Message {
 
 export interface OAuthToken {
   id: string;
-  provider: "linear" | "google" | "github" | "gitlab" | "jira" | "notion";
+  provider: "linear" | "github" | "gitlab" | "jira" | "notion";
   user_id: string;
   access_token: string;
   refresh_token?: string;
@@ -47,10 +47,10 @@ export interface OAuthToken {
 
 export interface WebhookConfig {
   id: string;
-  platform: "linear" | "gmail" | "github" | "gitlab" | "jira" | "notion" | "obsidian";
+  platform: "linear" | "github" | "gitlab" | "jira" | "notion" | "obsidian";
   webhook_id?: string;
   webhook_secret?: string;
-  subscription_id?: string;    // For Gmail Pub/Sub
+  subscription_id?: string;
   created_at: number;
 }
 
@@ -59,7 +59,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS instances (
   id TEXT PRIMARY KEY,
   thread_id TEXT NOT NULL,
-  platform TEXT NOT NULL CHECK (platform IN ('linear', 'gmail', 'github', 'gitlab', 'jira', 'notion', 'obsidian')),
+  platform TEXT NOT NULL CHECK (platform IN ('linear', 'github', 'gitlab', 'jira', 'notion', 'obsidian')),
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed', 'idle', 'expired')),
   working_dir TEXT NOT NULL,
   original_prompt TEXT NOT NULL,
@@ -89,7 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_instance ON messages (instance_id);
 -- OAuth tokens table
 CREATE TABLE IF NOT EXISTS oauth_tokens (
   id TEXT PRIMARY KEY,
-  provider TEXT NOT NULL CHECK (provider IN ('linear', 'google', 'github', 'gitlab', 'jira', 'notion')),
+  provider TEXT NOT NULL CHECK (provider IN ('linear', 'github', 'gitlab', 'jira', 'notion')),
   user_id TEXT NOT NULL,
   access_token TEXT NOT NULL,
   refresh_token TEXT,
@@ -105,7 +105,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_provider_user ON oauth_tokens (provi
 -- Webhook configurations table
 CREATE TABLE IF NOT EXISTS webhook_configs (
   id TEXT PRIMARY KEY,
-  platform TEXT NOT NULL UNIQUE CHECK (platform IN ('linear', 'gmail', 'github', 'gitlab', 'jira', 'notion', 'obsidian')),
+  platform TEXT NOT NULL UNIQUE CHECK (platform IN ('linear', 'github', 'gitlab', 'jira', 'notion', 'obsidian')),
   webhook_id TEXT,
   webhook_secret TEXT,
   subscription_id TEXT,
@@ -188,7 +188,7 @@ export class DatabaseManager {
         this.db.exec("ALTER TABLE instances RENAME TO instances_old");
         this.db.exec(`CREATE TABLE instances (
           id TEXT PRIMARY KEY, thread_id TEXT NOT NULL,
-          platform TEXT NOT NULL CHECK (platform IN ('linear', 'gmail', 'github', 'gitlab', 'jira', 'notion', 'obsidian')),
+          platform TEXT NOT NULL CHECK (platform IN ('linear', 'github', 'gitlab', 'jira', 'notion', 'obsidian')),
           status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed', 'idle', 'expired')),
           working_dir TEXT NOT NULL, original_prompt TEXT NOT NULL, completion_summary TEXT,
           created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
@@ -212,7 +212,7 @@ export class DatabaseManager {
         // OAuth tokens
         this.db.exec("ALTER TABLE oauth_tokens RENAME TO oauth_tokens_old");
         this.db.exec(`CREATE TABLE oauth_tokens (
-          id TEXT PRIMARY KEY, provider TEXT NOT NULL CHECK (provider IN ('linear', 'google', 'github', 'gitlab', 'jira', 'notion')),
+          id TEXT PRIMARY KEY, provider TEXT NOT NULL CHECK (provider IN ('linear', 'github', 'gitlab', 'jira', 'notion')),
           user_id TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT, expires_at INTEGER,
           scope TEXT NOT NULL, platform_username TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
         )`);
@@ -222,7 +222,7 @@ export class DatabaseManager {
         // Webhook configs
         this.db.exec("ALTER TABLE webhook_configs RENAME TO webhook_configs_old");
         this.db.exec(`CREATE TABLE webhook_configs (
-          id TEXT PRIMARY KEY, platform TEXT NOT NULL UNIQUE CHECK (platform IN ('linear', 'gmail', 'github', 'gitlab', 'jira', 'notion', 'obsidian')),
+          id TEXT PRIMARY KEY, platform TEXT NOT NULL UNIQUE CHECK (platform IN ('linear', 'github', 'gitlab', 'jira', 'notion', 'obsidian')),
           webhook_id TEXT, webhook_secret TEXT, subscription_id TEXT, created_at INTEGER NOT NULL
         )`);
         this.db.exec("INSERT INTO webhook_configs SELECT * FROM webhook_configs_old");
@@ -246,7 +246,7 @@ export class DatabaseManager {
         this.db.exec("ALTER TABLE instances RENAME TO instances_old");
         this.db.exec(`CREATE TABLE instances (
           id TEXT PRIMARY KEY, thread_id TEXT NOT NULL,
-          platform TEXT NOT NULL CHECK (platform IN ('linear', 'gmail', 'github', 'gitlab', 'jira', 'notion', 'obsidian')),
+          platform TEXT NOT NULL CHECK (platform IN ('linear', 'github', 'gitlab', 'jira', 'notion', 'obsidian')),
           status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed', 'idle', 'expired')),
           working_dir TEXT NOT NULL, original_prompt TEXT NOT NULL, completion_summary TEXT,
           created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
@@ -268,7 +268,7 @@ export class DatabaseManager {
         this.db.exec("CREATE INDEX IF NOT EXISTS idx_messages_instance ON messages (instance_id)");
         this.db.exec("ALTER TABLE oauth_tokens RENAME TO oauth_tokens_old");
         this.db.exec(`CREATE TABLE oauth_tokens (
-          id TEXT PRIMARY KEY, provider TEXT NOT NULL CHECK (provider IN ('linear', 'google', 'github', 'gitlab', 'jira', 'notion')),
+          id TEXT PRIMARY KEY, provider TEXT NOT NULL CHECK (provider IN ('linear', 'github', 'gitlab', 'jira', 'notion')),
           user_id TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT, expires_at INTEGER,
           scope TEXT NOT NULL, platform_username TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
         )`);
@@ -277,7 +277,7 @@ export class DatabaseManager {
         this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_provider_user ON oauth_tokens (provider, user_id)");
         this.db.exec("ALTER TABLE webhook_configs RENAME TO webhook_configs_old");
         this.db.exec(`CREATE TABLE webhook_configs (
-          id TEXT PRIMARY KEY, platform TEXT NOT NULL UNIQUE CHECK (platform IN ('linear', 'gmail', 'github', 'gitlab', 'jira', 'notion', 'obsidian')),
+          id TEXT PRIMARY KEY, platform TEXT NOT NULL UNIQUE CHECK (platform IN ('linear', 'github', 'gitlab', 'jira', 'notion', 'obsidian')),
           webhook_id TEXT, webhook_secret TEXT, subscription_id TEXT, created_at INTEGER NOT NULL
         )`);
         this.db.exec("INSERT INTO webhook_configs SELECT * FROM webhook_configs_old");

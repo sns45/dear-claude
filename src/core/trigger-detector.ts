@@ -5,7 +5,7 @@
 
 export interface TriggerContext {
   threadId: string;
-  platform: "linear" | "gmail" | "github" | "gitlab" | "jira" | "notion" | "obsidian";
+  platform: "linear" | "github" | "gitlab" | "jira" | "notion" | "obsidian";
   content: string;
   isDescription: boolean;  // True if this is the issue description/email body, false if comment/reply
   messageId?: string;
@@ -156,18 +156,6 @@ export class TriggerDetector {
     return null;
   }
 
-  static parseGmailEvent(message: GmailMessage, threadId: string, isFirstInThread: boolean): TriggerContext {
-    return {
-      threadId,
-      platform: "gmail",
-      content: `${message.subject || ""}\n${message.body || ""}`,
-      isDescription: isFirstInThread,
-      messageId: message.id,
-      authorId: message.from,
-      timestamp: message.timestamp
-    };
-  }
-
   static parseGitHubEvent(event: GitHubWebhookEvent): TriggerContext | null {
     if (event.action === "opened" && event.issue) {
       return {
@@ -255,15 +243,6 @@ export interface LinearWebhookEvent {
     issue?: { id: string };
   };
   organizationId: string;
-}
-
-export interface GmailMessage {
-  id: string;
-  threadId: string;
-  subject?: string;
-  body?: string;
-  from: string;
-  timestamp: number;
 }
 
 export interface GitHubWebhookEvent {

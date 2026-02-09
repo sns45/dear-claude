@@ -17,7 +17,7 @@ import type { ClaudeExecutor, PlatformCallbacks } from "./core/claude-executor.j
 import type { RepoMeta } from "./core/instance-manager.js";
 import { TriggerDetector } from "./core/trigger-detector.js";
 import { LinearAdapter } from "./adapters/linear-adapter.js";
-import { GmailAdapter } from "./adapters/gmail-adapter.js";
+
 import { GitHubAdapter } from "./adapters/github-adapter.js";
 import { GitLabAdapter } from "./adapters/gitlab-adapter.js";
 import { JiraAdapter } from "./adapters/jira-adapter.js";
@@ -79,13 +79,6 @@ export interface ServerConfig {
     webhookSecret?: string;
     accessToken?: string;
   };
-  gmail?: {
-    clientId?: string;
-    clientSecret?: string;
-    accessToken?: string;
-    refreshToken?: string;
-    pubsubTopic?: string;
-  };
   github?: {
     clientId?: string;
     clientSecret?: string;
@@ -132,9 +125,6 @@ export function createServer(
   if (config.linear) {
     adapters.set("linear", new LinearAdapter(config.linear));
   }
-  if (config.gmail) {
-    adapters.set("gmail", new GmailAdapter(config.gmail));
-  }
   if (config.github) {
     adapters.set("github", new GitHubAdapter(config.github));
   }
@@ -163,7 +153,6 @@ export function createServer(
       webhooks: publicUrl ? {
         github: `${publicUrl}/webhook/github`,
         linear: `${publicUrl}/webhook/linear`,
-        gmail: `${publicUrl}/webhook/gmail`,
         gitlab: `${publicUrl}/webhook/gitlab`,
         jira: `${publicUrl}/webhook/jira`,
         notion: `${publicUrl}/webhook/notion`
@@ -171,12 +160,10 @@ export function createServer(
       oauth: publicUrl ? {
         github: `${publicUrl}/setup/github`,
         linear: `${publicUrl}/setup/linear`,
-        gmail: `${publicUrl}/setup/gmail`,
         notion: `${publicUrl}/setup/notion`
       } : null,
       platforms: {
         linear: adapters.has("linear"),
-        gmail: adapters.has("gmail"),
         github: adapters.has("github"),
         gitlab: adapters.has("gitlab"),
         jira: adapters.has("jira"),
@@ -185,15 +172,14 @@ export function createServer(
       },
       authenticatedUsers: {
         github: db.getPlatformUsername("github") || null,
-        linear: db.getPlatformUsername("linear") || null,
-        google: db.getPlatformUsername("google") || null
+        linear: db.getPlatformUsername("linear") || null
       }
     });
   });
 
   // Webhook endpoints
   app.post("/webhook/:platform", async (c) => {
-    const platform = c.req.param("platform") as "linear" | "gmail" | "github" | "gitlab" | "jira" | "notion";
+    const platform = c.req.param("platform") as "linear" | "github" | "gitlab" | "jira" | "notion";
     const adapter = adapters.get(platform);
 
     if (!adapter) {
@@ -428,7 +414,7 @@ export function createServer(
 
   // OAuth callback endpoints
   app.get("/oauth/callback/:platform", async (c) => {
-    const platform = c.req.param("platform") as "linear" | "gmail" | "github" | "notion";
+    const platform = c.req.param("platform") as "linear" | "github" | "notion";
     const adapter = adapters.get(platform);
 
     if (!adapter || !adapter.handleCallback) {
@@ -460,11 +446,9 @@ export function createServer(
       const tokens = await adapter.handleCallback(code, redirectUri);
 
       // Save tokens to database
-      // Map gmail platform to google provider (OAuth provider name)
-      const oauthProvider = platform === "gmail" ? "google" : platform;
       db.saveOAuthToken({
         id: crypto.randomUUID(),
-        provider: oauthProvider,
+        provider: platform,
         user_id: "default",  // Single-user for now
         access_token: tokens.accessToken,
         refresh_token: tokens.refreshToken,
@@ -499,7 +483,7 @@ export function createServer(
 
   // Setup initiation endpoints (for CLI to open in browser)
   app.get("/setup/:platform", (c) => {
-    const platform = c.req.param("platform") as "linear" | "gmail" | "github" | "notion";
+    const platform = c.req.param("platform") as "linear" | "github" | "notion";
     const adapter = adapters.get(platform);
 
     if (!adapter || !adapter.getAuthUrl) {

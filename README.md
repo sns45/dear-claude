@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>MCP server that triggers local Claude Code instances from external platforms.</strong><br>
-  Say "Dear Claude" in Linear, GitHub, Jira, GitLab, Notion, Obsidian, or Gmail — and a Claude Code instance spins up to handle it.
+  Say "Dear Claude" in Linear, GitHub, Jira, GitLab, Notion, or Obsidian — and a Claude Code instance spins up to handle it.
 </p>
 
 <p align="center">
@@ -36,7 +36,6 @@ Dear Claude is an MCP (Model Context Protocol) server that watches your project 
 | GitLab   | Yes | Yes | Yes | Yes | - | Yes |
 | Notion   | Yes | Yes | Yes | - | - | - |
 | Obsidian | Yes | - | Yes | - | - | - |
-| Gmail    | Yes | - | Yes | - | - | - |
 
 ## Cross-Platform Orchestration
 
@@ -314,33 +313,6 @@ Claude's response appears as a callout block appended to the same note. The fron
 
 ---
 
-### Gmail
-
-1. **Create OAuth credentials** in [Google Cloud Console](https://console.cloud.google.com/apis/credentials):
-   - Create a project (or use existing)
-   - Enable the **Gmail API**
-   - Create **OAuth 2.0 Client ID** (Web application type)
-   - Add authorized redirect URI: `https://<your-hostname>.ts.net/dc/oauth/callback/gmail`
-2. Set env vars:
-   ```bash
-   GOOGLE_CLIENT_ID=123456789-abc.apps.googleusercontent.com
-   GOOGLE_CLIENT_SECRET=GOCSPX-...
-   ```
-3. **(Optional) Set up Pub/Sub** for real-time push notifications:
-   - Create a Pub/Sub topic in Google Cloud Console
-   - Set: `GOOGLE_PUBSUB_TOPIC=projects/your-project/topics/your-topic`
-4. Complete OAuth: visit `https://<your-hostname>.ts.net/dc/setup/gmail`
-
-| Environment Variable | Description |
-|---------------------|-------------|
-| `GOOGLE_CLIENT_ID` | OAuth client ID |
-| `GOOGLE_CLIENT_SECRET` | OAuth client secret |
-| `GOOGLE_ACCESS_TOKEN` | Access token (skip OAuth) |
-| `GOOGLE_REFRESH_TOKEN` | Refresh token |
-| `GOOGLE_PUBSUB_TOPIC` | Pub/Sub topic for push notifications |
-
----
-
 ## Usage
 
 ### Trigger Format
@@ -352,7 +324,6 @@ Write **"Dear Claude"** (case-insensitive, with a space) anywhere in:
 - GitLab issue/MR descriptions or comments
 - Notion page comments
 - Obsidian `.md` files
-- Gmail emails
 
 ### Example
 
@@ -429,13 +400,6 @@ NOTION_ACCESS_TOKEN=
 OBSIDIAN_VAULT_PATH=
 OBSIDIAN_WATCH_DEBOUNCE_MS=2000
 
-# Gmail/Google
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
-GOOGLE_ACCESS_TOKEN=
-GOOGLE_REFRESH_TOKEN=
-GOOGLE_PUBSUB_TOPIC=
-
 # Optional
 GIPHY_API_KEY=                   # For fun GIF reactions in responses
 ```
@@ -507,11 +471,11 @@ The server also exposes REST endpoints on `localhost:3334`:
 
 ```
                   Webhooks / File Watcher
-  ┌────────┐ ┌────────┐ ┌──────┐ ┌────────┐ ┌──────────┐ ┌──────┐
-  │ GitHub │ │ Linear │ │ Jira │ │ GitLab │ │ Obsidian │ │Gmail │
-  └───┬────┘ └───┬────┘ └──┬───┘ └───┬────┘ └────┬─────┘ └──┬───┘
-      │          │         │         │            │           │
-      └──────────┴────┬────┴─────────┴────────────┴───────────┘
+  ┌────────┐ ┌────────┐ ┌──────┐ ┌────────┐ ┌──────────┐ ┌────────┐
+  │ GitHub │ │ Linear │ │ Jira │ │ GitLab │ │ Obsidian │ │ Notion │
+  └───┬────┘ └───┬────┘ └──┬───┘ └───┬────┘ └────┬─────┘ └───┬────┘
+      │          │         │         │            │            │
+      └──────────┴────┬────┴─────────┴────────────┴────────────┘
                       │
                       ▼
            ┌─────────────────────┐

@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.sns45/dear-claude",
-  "description": "Spawn Claude Code instances from 7 platforms when 'Dear Claude' is mentioned.",
+  "description": "Spawn Claude Code instances from 6 platforms when 'Dear Claude' is mentioned.",
   "repository": {
     "url": "https://github.com/sns45/dear-claude",
     "source": "github"
@@ -173,41 +173,6 @@
         {
           "name": "OBSIDIAN_VAULT_PATH",
           "description": "Absolute path to Obsidian vault directory for file watching",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false
-        },
-        {
-          "name": "GOOGLE_CLIENT_ID",
-          "description": "Google OAuth client ID for Gmail",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false
-        },
-        {
-          "name": "GOOGLE_CLIENT_SECRET",
-          "description": "Google OAuth client secret for Gmail",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": true
-        },
-        {
-          "name": "GOOGLE_ACCESS_TOKEN",
-          "description": "Google OAuth access token",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": true
-        },
-        {
-          "name": "GOOGLE_REFRESH_TOKEN",
-          "description": "Google OAuth refresh token for automatic token renewal",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": true
-        },
-        {
-          "name": "GOOGLE_PUBSUB_TOPIC",
-          "description": "Google Pub/Sub topic for Gmail push notifications",
           "isRequired": false,
           "format": "string",
           "isSecret": false

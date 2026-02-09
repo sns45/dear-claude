@@ -5,7 +5,7 @@
 
 import type { Context } from "hono";
 
-export type PlatformType = "linear" | "gmail" | "github" | "gitlab" | "jira" | "notion" | "obsidian";
+export type PlatformType = "linear" | "github" | "gitlab" | "jira" | "notion" | "obsidian";
 
 export interface PlatformEvent {
   platform: PlatformType;

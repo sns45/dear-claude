@@ -2,7 +2,7 @@
   "name": "dear-claude",
   "version": "1.0.1",
   "mcpName": "io.github.sns45/dear-claude",
-  "description": "MCP server that triggers local Claude Code instances from external platforms (GitHub, Linear, Jira, GitLab, Notion, Obsidian, Gmail) when 'Dear Claude' is mentioned",
+  "description": "MCP server that triggers local Claude Code instances from external platforms (GitHub, Linear, Jira, GitLab, Notion, Obsidian) when 'Dear Claude' is mentioned",
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
@@ -22,7 +22,6 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.25",
-    "@googleapis/gmail": "^2.0.0",
     "@linear/sdk": "^29.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@octokit/rest": "^20.0.0",
@@ -37,7 +36,6 @@
     "claude-code",
     "mcp",
     "linear",
-    "gmail",
     "github",
     "gitlab",
     "jira",

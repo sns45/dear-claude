@@ -137,7 +137,7 @@ export function createMCPServer(
           platform: {
             type: "string",
             description: "Target platform (default: github)",
-            enum: ["linear", "gmail", "github", "gitlab", "jira", "notion", "obsidian"]
+            enum: ["linear", "github", "gitlab", "jira", "notion", "obsidian"]
           },
           repo_url: {
             type: "string",
@@ -196,7 +196,6 @@ export function createMCPServer(
       case "list_platforms": {
         const platforms: Record<string, boolean> = {
           linear: !!(config?.linear?.clientId || config?.linear?.accessToken),
-          gmail: !!(config?.gmail?.clientId),
           github: !!(config?.github?.clientId || config?.github?.accessToken),
           gitlab: !!(config?.gitlab?.accessToken),
           jira: !!(config?.jira?.domain && config?.jira?.apiToken),
@@ -554,14 +553,12 @@ export async function startMCPServer(
       console.error(`[MCP] Webhook URLs (public):`);
       console.error(`   GitHub:  ${publicUrl}/webhook/github`);
       console.error(`   Linear:  ${publicUrl}/webhook/linear`);
-      console.error(`   Gmail:   ${publicUrl}/webhook/gmail`);
       console.error(`[MCP] OAuth Setup:`);
       console.error(`   GitHub:  ${publicUrl}/setup/github`);
     } else {
       console.error(`[MCP] Webhook URLs (local only):`);
       console.error(`   GitHub:  http://localhost:${httpPort}/webhook/github`);
       console.error(`   Linear:  http://localhost:${httpPort}/webhook/linear`);
-      console.error(`   Gmail:   http://localhost:${httpPort}/webhook/gmail`);
     }
   }
 

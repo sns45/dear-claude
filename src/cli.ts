@@ -22,13 +22,6 @@ function getConfig(): ServerConfig {
       webhookSecret: process.env.LINEAR_WEBHOOK_SECRET,
       accessToken: process.env.LINEAR_ACCESS_TOKEN
     },
-    gmail: {
-      clientId: process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-      accessToken: process.env.GOOGLE_ACCESS_TOKEN,
-      refreshToken: process.env.GOOGLE_REFRESH_TOKEN,
-      pubsubTopic: process.env.GOOGLE_PUBSUB_TOPIC
-    },
     github: {
       clientId: process.env.GITHUB_CLIENT_ID,
       clientSecret: process.env.GITHUB_CLIENT_SECRET,
@@ -212,14 +205,12 @@ export function createCLI(): Command {
       if (config.publicUrl) {
         console.log(`\n📍 Webhook URLs:`);
         console.log(`   Linear:  ${config.publicUrl}/webhook/linear`);
-        console.log(`   Gmail:   ${config.publicUrl}/webhook/gmail`);
         console.log(`   GitHub:  ${config.publicUrl}/webhook/github`);
         console.log(`   GitLab:  ${config.publicUrl}/webhook/gitlab`);
         console.log(`   Jira:    ${config.publicUrl}/webhook/jira`);
         console.log(`   Notion:  ${config.publicUrl}/webhook/notion`);
         console.log(`\n🔐 OAuth Setup:`);
         console.log(`   Linear:  ${config.publicUrl}/setup/linear`);
-        console.log(`   Gmail:   ${config.publicUrl}/setup/gmail`);
         console.log(`   GitHub:  ${config.publicUrl}/setup/github`);
         console.log(`   Notion:  ${config.publicUrl}/setup/notion`);
       }
@@ -256,7 +247,6 @@ export function createCLI(): Command {
       // Check platforms
       console.log("Platforms:");
       console.log(`  Linear:  ${config.linear?.accessToken ? "✅ Connected" : config.linear?.clientId ? "⚠️  OAuth configured" : "❌ Not configured"}`);
-      console.log(`  Gmail:   ${config.gmail?.accessToken ? "✅ Connected" : config.gmail?.clientId ? "⚠️  OAuth configured" : "❌ Not configured"}`);
       console.log(`  GitHub:  ${config.github?.accessToken ? "✅ Connected" : config.github?.clientId ? "⚠️  OAuth configured" : "❌ Not configured"}`);
       console.log(`  GitLab:  ${config.gitlab?.accessToken ? "✅ Connected" : "❌ Not configured"}`);
       console.log(`  Jira:    ${config.jira?.apiToken ? "✅ Connected" : config.jira?.domain ? "⚠️  Domain configured" : "❌ Not configured"}`);
@@ -363,9 +353,9 @@ export function createCLI(): Command {
   // Setup command
   program
     .command("setup <platform>")
-    .description("Configure a platform (linear, gmail, github, jira, notion, obsidian)")
+    .description("Configure a platform (linear, github, jira, notion, obsidian)")
     .action(async (platform) => {
-      const validPlatforms = ["linear", "gmail", "github", "jira", "notion", "obsidian"];
+      const validPlatforms = ["linear", "github", "jira", "notion", "obsidian"];
       if (!validPlatforms.includes(platform)) {
         console.error(`Invalid platform: ${platform}`);
         console.log(`Valid platforms: ${validPlatforms.join(", ")}`);
@@ -430,10 +420,6 @@ export function createCLI(): Command {
         console.log("  LINEAR_CLIENT_ID");
         console.log("  LINEAR_CLIENT_SECRET");
         console.log("\n(Get these from Linear Settings → API → OAuth Applications)");
-      } else if (platform === "gmail") {
-        console.log("  GOOGLE_CLIENT_ID");
-        console.log("  GOOGLE_CLIENT_SECRET");
-        console.log("\n(Get these from Google Cloud Console → APIs & Services → Credentials)");
       } else if (platform === "github") {
         console.log("  GITHUB_CLIENT_ID");
         console.log("  GITHUB_CLIENT_SECRET");
