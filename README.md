@@ -566,6 +566,23 @@ bun test
 - **Stuck in PENDING**: Check that Claude Code CLI (`claude`) is installed and accessible in your PATH.
 - **Working directory issues**: Instances create workspaces under `data/workspaces/`. Ensure write permissions.
 
+## Capability attestation
+
+This repo ships a [smithmark](https://github.com/smithmark) capability manifest at [`smithmark.yaml`](smithmark.yaml), alongside a static tool listing at [`tools.json`](tools.json). The manifest declares, in one place, the full external surface this MCP server touches when it runs:
+
+- **Network egress**: every host it talks to (`api.github.com`, `github.com`, `api.linear.app`, `linear.app`, `gitlab.com`, `*.atlassian.net`, `api.notion.com`, `api.giphy.com`, `api.anthropic.com`) and why.
+- **Filesystem**: the paths it reads or writes (`~/.dear-claude/**`, `data/**`, `~/.claude.json`, the debug log) and the access level.
+- **Exec**: subprocesses it spawns (`claude`, `tailscale`, `which`, `open`, `sudo`, `pkill`).
+- **Env vars and secrets**: every credential-shaped environment variable it consumes, tagged by kind (access token, client secret, webhook secret, API key, private key).
+
+Once smithmark is publicly available you'll be able to verify the manifest against the published package with:
+
+```bash
+smithmark verify dear-claude@1.1.0
+```
+
+The manifest is the **authoritative** record of this server's capability surface. smithmark's `lint` is deliberately host-unaware and advisory: it flags every `fetch()` call site and every exec as "undeclared" regardless of what's in the manifest, so it will show findings on this codebase (and on any real MCP server) even though the egress above is fully declared. Treat lint output as a discovery aid, not a drift signal, until `--strict` or a host-aware successor ships.
+
 ## License
 
 MIT

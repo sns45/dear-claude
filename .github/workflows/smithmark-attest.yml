@@ -1,0 +1,32 @@
+name: smithmark attest
+
+# Runs a smithmark capability attestation against the committed smithmark.yaml
+# manifest on every GitHub Release, so consumers can verify the published
+# dear-claude package against its declared network/filesystem/exec/env/secret
+# surface (see the "Capability attestation" section in README.md).
+#
+# TODO(smithmark): smithmark is currently private and unreleased (naming
+# gates pending), so there is no public release to install in CI yet. Flip
+# `if: false` to `if: true` below once `smithmark` is installable (e.g. via
+# `npm install -g smithmark` or a published GitHub Action) and this job has
+# been verified to run against a real install.
+on:
+  release:
+    types: [published]
+
+jobs:
+  attest:
+    name: Attest capability manifest
+    runs-on: ubuntu-latest
+    if: false # TODO(smithmark): enable once smithmark is publicly available
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install smithmark
+        run: |
+          echo "TODO(smithmark): install smithmark once it has a public release."
+          # npm install -g smithmark
+
+      - name: Run attestation
+        run: smithmark attest . --tools-from tools.json
