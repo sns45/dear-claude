@@ -1,32 +1,57 @@
 name: smithmark attest
 
-# Runs a smithmark capability attestation against the committed smithmark.yaml
-# manifest on every GitHub Release, so consumers can verify the published
-# dear-claude package against its declared network/filesystem/exec/env/secret
-# surface (see the "Capability attestation" section in README.md).
+# Produces a keyless smithmark capability attestation for each GitHub release,
+# so consumers can verify the published dear-claude package against its
+# declared network/filesystem/exec/env/secret surface (see the "Capability
+# attestation" section in README.md).
 #
-# TODO(smithmark): smithmark is currently private and unreleased (naming
-# gates pending), so there is no public release to install in CI yet. Flip
-# `if: false` to `if: true` below once `smithmark` is installable (e.g. via
-# `npm install -g smithmark` or a published GitHub Action) and this job has
-# been verified to run against a real install.
+# Keyless: the job signs via the ambient GitHub Actions OIDC token (GitHub ->
+# Fulcio short-lived certificate -> Rekor transparency log). No signing keys,
+# no secrets, no Doppler.
+
 on:
   release:
     types: [published]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write      # keyless Sigstore signing via GitHub OIDC — no secrets
+  contents: write      # upload the attestation to the release
 
 jobs:
   attest:
     name: Attest capability manifest
     runs-on: ubuntu-latest
-    if: false # TODO(smithmark): enable once smithmark is publicly available
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
 
       - name: Install smithmark
         run: |
-          echo "TODO(smithmark): install smithmark once it has a public release."
-          # npm install -g smithmark
+          go install github.com/sns45/smithmark/cmd/smithmark@v0.2.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      - name: Run attestation
-        run: smithmark attest . --tools-from tools.json
+      - name: Build + pack
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+          npm pack        # produces <name>-<version>.tgz
+
+      - name: Keyless attest (GitHub OIDC -> Fulcio -> Rekor)
+        run: |
+          smithmark attest . --keyless --tools-from tools.json --tarball *.tgz --output smithmark-attestation.sigstore.json
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF#refs/tags/}" smithmark-attestation.sigstore.json --clobber
+
+      - name: Upload as artifact (for workflow_dispatch verification runs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: smithmark-attestation
+          path: smithmark-attestation.sigstore.json
