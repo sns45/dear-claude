@@ -1,6 +1,6 @@
 {
   "name": "dear-claude",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "mcpName": "io.github.sns45/dear-claude",
   "description": "MCP server that triggers local Claude Code instances from external platforms (GitHub, Linear, Jira, GitLab, Notion, Obsidian) when 'Dear Claude' is mentioned",
   "type": "module",
