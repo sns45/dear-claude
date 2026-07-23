@@ -12,7 +12,7 @@
 # standing in for a live extraction the real release would perform.
 kind: mcp-server
 name: dear-claude
-version: 1.1.0
+version: 1.1.2
 source: npm
 mcp:
   transports:
