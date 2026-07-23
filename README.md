@@ -575,11 +575,17 @@ This repo ships a [smithmark](https://github.com/smithmark) capability manifest 
 - **Exec**: subprocesses it spawns (`claude`, `tailscale`, `which`, `open`, `sudo`, `pkill`).
 - **Env vars and secrets**: every credential-shaped environment variable it consumes, tagged by kind (access token, client secret, webhook secret, API key, private key).
 
-Once smithmark is publicly available you'll be able to verify the manifest against the published package with:
+On every GitHub release, `.github/workflows/smithmark-attest.yml` produces a **keyless** Sigstore attestation over the published npm tarball: GitHub's OIDC token is exchanged for a short-lived Fulcio signing certificate, the attestation is signed with it, and the signature is recorded in the public Rekor transparency log. There are no signing keys and no secrets involved. The resulting `smithmark-attestation.sigstore.json` is attached to the GitHub release.
+
+Verify a published version with:
 
 ```bash
-smithmark verify dear-claude@1.1.0
+smithmark verify dear-claude@1.1.0 \
+  --certificate-identity "https://github.com/sns45/dear-claude/.github/workflows/smithmark-attest.yml@refs/tags/v1.1.0" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 ```
+
+(substitute the actual release tag for `v1.1.0`)
 
 The manifest is the **authoritative** record of this server's capability surface. smithmark's `lint` is deliberately host-unaware and advisory: it flags every `fetch()` call site and every exec as "undeclared" regardless of what's in the manifest, so it will show findings on this codebase (and on any real MCP server) even though the egress above is fully declared. Treat lint output as a discovery aid, not a drift signal, until `--strict` or a host-aware successor ships.
 
