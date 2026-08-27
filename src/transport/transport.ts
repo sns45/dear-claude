@@ -12,6 +12,13 @@ const execAsync = promisify(exec);
 
 export interface TransportConfig {
   port: number;
+  /**
+   * Allow prompts that block or take over the terminal (installing Tailscale,
+   * launching the app, opening a browser login). Off by default: server
+   * startup must never stall waiting on a human, and in MCP stdio mode there
+   * is no terminal to prompt on.
+   */
+  interactive?: boolean;
 }
 
 interface TailscaleStatus {
@@ -38,27 +45,46 @@ export class TransportManager {
   }
 
   async start(): Promise<string> {
+    const interactive = this.config.interactive === true;
     console.log("[Tailscale] Checking setup...");
 
-    // Check all prerequisites and provide guidance
-    const status = await this.checkTailscaleStatus();
+    let status = await this.checkTailscaleStatus();
 
     if (!status.installed) {
-      await this.guidedInstall();
-      throw new Error("Tailscale installation required - see instructions above");
+      if (interactive) {
+        await this.guidedInstall();
+      }
+      throw new Error(
+        "Tailscale is not installed. Run 'dear-claude tunnel-setup' for setup instructions, or start with --no-tunnel."
+      );
     }
 
     if (!status.running) {
+      if (!interactive) {
+        // Launching the app or daemon can pop UI and block; never do that
+        // implicitly during server startup.
+        throw new Error(
+          "Tailscale is installed but not running. Start Tailscale, then restart -- or use --no-tunnel."
+        );
+      }
       console.log("[Tailscale] Tailscale daemon not running, attempting to start...");
       await this.startTailscaleDaemon();
+      status = await this.checkTailscaleStatus();
+      if (!status.running) {
+        throw new Error("Tailscale daemon could not be started");
+      }
     }
 
     if (!status.authenticated) {
+      if (!interactive) {
+        throw new Error(
+          "Tailscale is not authenticated. Run 'tailscale up', then restart -- or use --no-tunnel."
+        );
+      }
       console.log("[Tailscale] Not authenticated, starting login...");
       await this.authenticate();
-      // Re-check status after auth
-      const newStatus = await this.checkTailscaleStatus();
-      if (!newStatus.authenticated) {
+      status = await this.checkTailscaleStatus();
+      if (!status.authenticated) {
         throw new Error("Tailscale authentication required - please complete the login in your browser");
       }
     }
@@ -69,8 +95,12 @@ export class TransportManager {
 
     // Check if funnel is enabled
     if (!status.funnelEnabled) {
-      this.printFunnelInstructions();
-      throw new Error("Tailscale Funnel not enabled - see instructions above");
+      if (interactive) {
+        this.printFunnelInstructions();
+      }
+      throw new Error(
+        "Tailscale Funnel is not enabled for this tailnet. Run 'dear-claude tunnel-setup' for instructions, or start with --no-tunnel."
+      );
     }
 
     // Start funnel

@@ -6,6 +6,7 @@
 import { Database } from "bun:sqlite";
 import { join } from "path";
 import { mkdirSync, existsSync } from "fs";
+import { getDataDir } from "../utils/paths.js";
 
 export interface Instance {
   id: string;
@@ -117,11 +118,16 @@ export class DatabaseManager {
   private db: Database;
 
   constructor(dbPath?: string) {
-    const dataDir = join(process.cwd(), "data");
-    if (!existsSync(dataDir)) {
-      mkdirSync(dataDir, { recursive: true });
+    let path = dbPath;
+    if (!path) {
+      // Only provision the shared data dir when falling back to the default
+      // location; an explicit dbPath (tests, ":memory:") must not create one.
+      const dataDir = getDataDir();
+      if (!existsSync(dataDir)) {
+        mkdirSync(dataDir, { recursive: true });
+      }
+      path = join(dataDir, "dear-claude.db");
     }
-    const path = dbPath || join(dataDir, "dear-claude.db");
     this.db = new Database(path);
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
