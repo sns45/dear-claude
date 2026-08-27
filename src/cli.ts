@@ -10,7 +10,8 @@ import { InstanceManager } from "./core/instance-manager.js";
 import { ClaudeExecutor } from "./core/claude-executor.js";
 import { TransportManager } from "./transport/transport.js";
 import { createServer, type ServerConfig } from "./server.js";
-import { startMCPServer } from "./mcp.js";
+import { startMCPServer, createMCPServer, mountMcpEndpoint } from "./mcp.js";
+import { getApiToken } from "./utils/auth.js";
 import { ObsidianVaultWatcher } from "./adapters/obsidian-watcher.js";
 
 function getConfig(): ServerConfig {
@@ -66,6 +67,13 @@ export function createCLI(): Command {
     .option("--no-tunnel", "Disable Tailscale Funnel")
     .option("--mcp", "Run as MCP server (stdio mode)")
     .action(async (options) => {
+      // In MCP mode stdout is the JSON-RPC channel: any stray write corrupts
+      // the framing and the client drops the connection. Route incidental
+      // logging to stderr before anything else can print.
+      if (options.mcp) {
+        console.log = (...args: unknown[]) => console.error(...args);
+      }
+
       const config = getConfig();
       config.port = parseInt(options.port, 10);
 
@@ -118,6 +126,11 @@ export function createCLI(): Command {
 
       // Create Hono app
       const app = createServer(config, db, instanceManager, executor, obsidianWatcher);
+
+      // Serve the MCP tool surface over stateless Streamable HTTP.
+      mountMcpEndpoint(app, () =>
+        createMCPServer(instanceManager, executor, config, { db, config, httpPort: config.port })
+      );
 
       // Start Obsidian watcher after server is created (needs the processEvent pipeline)
       if (obsidianWatcher) {
@@ -194,13 +207,20 @@ export function createCLI(): Command {
         });
       }
 
+      // Bind loopback by default: these endpoints control this machine and
+      // must not be reachable from the LAN unless deliberately opted in.
+      const httpHost = process.env.DEAR_CLAUDE_HOST || "127.0.0.1";
+
       // Start server
       const server = serve({
         fetch: app.fetch,
-        port: config.port
+        port: config.port,
+        hostname: httpHost
       });
 
-      console.log(`\n🚀 dear-claude server running on port ${config.port}`);
+      console.log(`\n🚀 dear-claude server running on ${httpHost}:${config.port}`);
+      console.log(`\n🔌 MCP (Streamable HTTP): http://${httpHost}:${config.port}/mcp`);
+      console.log(`   Token: ${getApiToken()}`);
 
       if (config.publicUrl) {
         console.log(`\n📍 Webhook URLs:`);
@@ -429,6 +449,33 @@ export function createCLI(): Command {
       console.log("\nOnce configured, run 'dear-claude start' and visit:");
       console.log(`  http://localhost:${config.port}/setup/${platform}`);
       console.log("\nOr use the Tailscale Funnel URL if running with a tunnel.");
+    });
+
+  // Tunnel setup command (the only place interactive Tailscale prompts run)
+  program
+    .command("tunnel-setup")
+    .description("Interactive Tailscale Funnel setup for public webhooks")
+    .option("-p, --port <port>", "Port to expose", "3334")
+    .action(async (options) => {
+      const transport = new TransportManager({
+        port: parseInt(options.port, 10),
+        interactive: true
+      });
+      try {
+        const url = await transport.start();
+        console.log(`\n✅ Tunnel active: ${url}`);
+      } catch (err) {
+        console.log(`\n❌ ${err instanceof Error ? err.message : err}`);
+        process.exitCode = 1;
+      }
+    });
+
+  // Token command
+  program
+    .command("token")
+    .description("Print the local API/MCP token (generates one on first use)")
+    .action(() => {
+      console.log(getApiToken());
     });
 
   return program;

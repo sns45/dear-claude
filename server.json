@@ -6,12 +6,12 @@
     "url": "https://github.com/sns45/dear-claude",
     "source": "github"
   },
-  "version": "1.1.2",
+  "version": "1.2.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "dear-claude",
-      "version": "1.1.2",
+      "version": "1.2.0",
       "transport": {
         "type": "stdio"
       },
@@ -22,6 +22,27 @@
           "isRequired": false,
           "format": "string",
           "isSecret": false
+        },
+        {
+          "name": "DEAR_CLAUDE_HOST",
+          "description": "Bind address for the HTTP server (default: 127.0.0.1, loopback only)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "DEAR_CLAUDE_DATA_DIR",
+          "description": "Override the data directory (default: $XDG_DATA_HOME/dear-claude or ~/.local/share/dear-claude)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "DEAR_CLAUDE_API_TOKEN",
+          "description": "Token guarding the /api/* and /mcp control endpoints (auto-generated at <dataDir>/api-token if unset)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
         },
         {
           "name": "TAILSCALE_HOSTNAME",

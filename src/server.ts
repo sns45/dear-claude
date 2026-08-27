@@ -27,6 +27,7 @@ import type { ObsidianVaultWatcher } from "./adapters/obsidian-watcher.js";
 import type { PlatformAdapter } from "./adapters/platform-adapter.js";
 import type { PlatformCredentials, IssueContext, AllPlatformCredentials } from "./core/claude-executor.js";
 import { sanitize } from "./utils/sanitize.js";
+import { requireApiToken } from "./utils/auth.js";
 
 /**
  * Build credentials for ALL configured platforms (not just the triggering one).
@@ -118,6 +119,12 @@ export function createServer(
   // Middleware
   app.use("*", logger());
   app.use("*", cors());
+
+  // Control-plane endpoints can spawn Claude with bypassed permissions on this
+  // machine, so they require the local token. Webhooks verify their own
+  // per-platform signatures and OAuth callbacks must stay publicly reachable,
+  // so neither is covered here.
+  app.use("/api/*", requireApiToken);
 
   // Initialize adapters
   const adapters: Map<string, PlatformAdapter> = new Map();

@@ -9,6 +9,7 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { DatabaseManager, type Instance, type Message } from "../db/schema.js";
 import { TriggerDetector, type TriggerContext, type TriggerResult } from "./trigger-detector.js";
+import { getDataDir } from "../utils/paths.js";
 
 export interface RepoMeta {
   authCloneUrl: string;
@@ -56,7 +57,7 @@ export class InstanceManager {
 
   constructor(db: DatabaseManager, dataDir?: string) {
     this.db = db;
-    this.dataDir = dataDir || join(process.cwd(), "data");
+    this.dataDir = dataDir || getDataDir();
   }
 
   /**

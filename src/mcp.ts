@@ -5,6 +5,9 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import type { Hono } from "hono";
+import { requireApiToken } from "./utils/auth.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -505,6 +508,51 @@ export function createMCPServer(
   return server;
 }
 
+/**
+ * Mount the MCP Streamable HTTP transport at /mcp on an existing Hono app.
+ *
+ * Runs in stateless mode (`sessionIdGenerator: undefined`): no session id is
+ * issued or validated, so any request is self-contained. A fresh Server and
+ * transport are built per request -- stateless means nothing may be shared
+ * across requests, and it keeps concurrent calls from colliding on JSON-RPC
+ * request ids.
+ *
+ * Guarded by the same token as /api/* because these tools can spawn Claude
+ * instances with bypassed permissions on this machine.
+ */
+export function mountMcpEndpoint(app: Hono, createServerInstance: () => Server): void {
+  app.all("/mcp", requireApiToken, async (c) => {
+    const transport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // stateless
+      enableJsonResponse: true
+    });
+
+    const server = createServerInstance();
+
+    // Tie the per-request server lifetime to the transport so neither leaks
+    // once the response is done.
+    transport.onclose = () => {
+      void server.close();
+    };
+
+    try {
+      await server.connect(transport);
+      return await transport.handleRequest(c.req.raw);
+    } catch (err) {
+      console.error("[MCP] Streamable HTTP request failed:", err);
+      await server.close().catch(() => {});
+      return c.json(
+        {
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null
+        },
+        500
+      );
+    }
+  });
+}
+
 export async function startMCPServer(
   instanceManager: InstanceManager,
   executor: ClaudeExecutor,
@@ -521,8 +569,44 @@ export async function startMCPServer(
     const httpPort = options.httpPort || 3334;
     let publicUrl: string | undefined;
 
-    // Start Tailscale Funnel if enabled
-    if (options.enableTunnel !== false) {
+    // Every Claude Code window spawns its own dear-claude MCP process, so the
+    // webhook port is contended. Bind first and treat a busy port as "another
+    // instance already owns webhooks" rather than a fatal error -- the MCP
+    // tools over stdio work regardless.
+    const app = createServer(options.config, options.db, instanceManager, executor);
+
+    // Expose the same tool surface over stateless Streamable HTTP so other
+    // Claude Code windows can share this process instead of spawning their own.
+    mountMcpEndpoint(app, () =>
+      createMCPServer(instanceManager, executor, options.config, options)
+    );
+
+    // Bind loopback by default: these endpoints control this machine and must
+    // not be reachable from the LAN unless deliberately opted in.
+    const httpHost = process.env.DEAR_CLAUDE_HOST || "127.0.0.1";
+
+    let ownsHttpPort = false;
+    try {
+      serve({
+        fetch: app.fetch,
+        port: httpPort,
+        hostname: httpHost
+      });
+      ownsHttpPort = true;
+      console.error(`[MCP] HTTP server started on ${httpHost}:${httpPort}`);
+      console.error(`[MCP] Streamable HTTP endpoint: http://${httpHost}:${httpPort}/mcp`);
+    } catch (err: any) {
+      if (err?.code === "EADDRINUSE") {
+        console.error(`[MCP] Port ${httpPort} already in use -- another dear-claude instance owns webhooks.`);
+        console.error(`[MCP] Continuing in MCP-only mode (tools available, webhooks handled by that instance).`);
+      } else {
+        console.error(`[MCP] Failed to start HTTP server: ${err instanceof Error ? err.message : err}`);
+        console.error(`[MCP] Continuing in MCP-only mode.`);
+      }
+    }
+
+    // Only the instance that owns the port should publish a tunnel to it.
+    if (ownsHttpPort && options.enableTunnel !== false) {
       const { TransportManager } = await import("./transport/transport.js");
       const transportManager = new TransportManager({
         port: httpPort
@@ -541,24 +625,18 @@ export async function startMCPServer(
       }
     }
 
-    const app = createServer(options.config, options.db, instanceManager, executor);
-
-    serve({
-      fetch: app.fetch,
-      port: httpPort
-    });
-
-    console.error(`[MCP] HTTP webhook server started on port ${httpPort}`);
-    if (publicUrl) {
-      console.error(`[MCP] Webhook URLs (public):`);
-      console.error(`   GitHub:  ${publicUrl}/webhook/github`);
-      console.error(`   Linear:  ${publicUrl}/webhook/linear`);
-      console.error(`[MCP] OAuth Setup:`);
-      console.error(`   GitHub:  ${publicUrl}/setup/github`);
-    } else {
-      console.error(`[MCP] Webhook URLs (local only):`);
-      console.error(`   GitHub:  http://localhost:${httpPort}/webhook/github`);
-      console.error(`   Linear:  http://localhost:${httpPort}/webhook/linear`);
+    if (ownsHttpPort) {
+      if (publicUrl) {
+        console.error(`[MCP] Webhook URLs (public):`);
+        console.error(`   GitHub:  ${publicUrl}/webhook/github`);
+        console.error(`   Linear:  ${publicUrl}/webhook/linear`);
+        console.error(`[MCP] OAuth Setup:`);
+        console.error(`   GitHub:  ${publicUrl}/setup/github`);
+      } else {
+        console.error(`[MCP] Webhook URLs (local only):`);
+        console.error(`   GitHub:  http://localhost:${httpPort}/webhook/github`);
+        console.error(`   Linear:  http://localhost:${httpPort}/webhook/linear`);
+      }
     }
   }
 
